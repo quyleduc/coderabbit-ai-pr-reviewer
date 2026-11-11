@@ -85,3 +85,11 @@ test('review checkpoints are loaded only from authenticated bot comments', () =>
   assert.match(publisher, /findTrustedTaggedComment\(comments, tag, 'github-actions\[bot\]'\)/)
   assert.match(dedup, /comment\.user\?\.login === trustedLogin/)
 })
+
+
+test('LGTM cannot acknowledge an unchanged context-only line', () => {
+  const anchor = review.indexOf('const anchor = resolveReviewAnchor(')
+  const acknowledgement = review.indexOf("hunkCoverage.mark(filename, targetHunk, 'reviewed')")
+  assert.ok(anchor >= 0 && acknowledgement > anchor,
+    'validate changed-line anchor before treating LGTM as reviewed')
+})
