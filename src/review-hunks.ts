@@ -1,5 +1,5 @@
-import {type CoverageStatus} from './review-integrity'
-import {type ChangedLineIndex} from './diff-hunks'
+import type {CoverageStatus} from './review-integrity'
+import type {ChangedLineIndex} from './diff-hunks'
 
 /** File/hunk-local IDs exist only for the current immutable review scope. */
 export function hunkUnitId(path: string, index: number): string {
