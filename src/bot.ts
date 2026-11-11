@@ -41,7 +41,8 @@ export class Bot {
       ].join('\n'),
       maxOutputTokens: this.openaiOptions.tokenLimits.responseTokens,
       timeoutMs: this.options.openaiTimeoutMS,
-      retries: this.options.openaiRetries
+      retries: this.options.openaiRetries,
+      retryRateLimits: !this.openaiOptions.model.endsWith(':free')
     })
     info('LLM Responses completed in ' + (Date.now() - start) + ' ms')
     return [responseText, {}]
