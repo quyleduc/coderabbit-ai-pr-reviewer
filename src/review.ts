@@ -18,7 +18,7 @@ import {type Options} from './options'
 import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
-import {parseReviewResponse} from './review-response'
+import {processStructuredReview} from './review-protocol'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
@@ -591,8 +591,10 @@ ${
       let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
       // loop to calculate total patch tokens
       let patchesToPack = 0
-      for (const [, , patch] of patches) {
-        const patchTokens = getTokenCount(patch)
+      for (const [index, [, , patch]] of patches.entries()) {
+        const patchTokens = getTokenCount(
+          '---review_hunk id=h' + index + '---\n' + patch + '\n---end_change_section---'
+        )
         if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
           info(
             `only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`
@@ -655,6 +657,7 @@ ${
         }
 
         ins.patches += `
+---review_hunk id=h${patchesPacked - 1}---
 ${patch}
 `
         if (commentChain !== '') {
@@ -684,65 +687,32 @@ ${commentChain}
             hunkCoverage.markFile(filename, 'failed_analysis')
             return
           }
-          // parse review
-          const reviews = parseReviewResponse(response)
-          if (reviews.length === 0) {
-            reviewsFailed.push(`${filename} (unparseable model response)`)
-            hunkCoverage.markFile(filename, 'failed_analysis')
-            return
+          // Fail the entire file before publishing anything if the model
+          // omits a hunk, invents a location or cites non-existent source.
+          const structured = processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)
+          for (const finding of structured.comments) {
+            await commenter.bufferReviewComment(
+              filename,
+              finding.startLine,
+              finding.endLine,
+              finding.message
+            )
+            reviewCount += 1
           }
-          for (const review of reviews) {
-            const targetHunk = hunkIndexForRange(
-              changedLineIndex, review.startLine, review.endLine
-            )
-            if (targetHunk === null || targetHunk >= patchesToPack) {
-              reviewsFailed.push(`${filename} (model feedback outside reviewed hunks)`)
-              continue
+          for (const cleanHunk of structured.cleanHunks) {
+            lgtmCount += 1
+            // Preserve the legacy opt-in LGTM inline comment behavior
+            // when GitHub has an added/right-side anchor available.
+            if (options.reviewCommentLGTM) {
+              const line = changedLineIndex.hunks[cleanHunk].addedLines[0]
+              if (line !== undefined) {
+                await commenter.bufferReviewComment(filename, line, line, 'LGTM!')
+                reviewCount += 1
+              }
             }
-            // Validate every feedback coordinate, including LGTM, against a changed line.
-            const anchor = resolveReviewAnchor(
-              changedLineIndex,
-              review.startLine,
-              review.endLine
-            )
-            if (!anchor.valid) {
-              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
-              reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
-              continue
-            }
-            // Treat only stand-alone approval as LGTM, not substantive
-            // bug reports that happen to mention the term "LGTM".
-            if (
-              !options.reviewCommentLGTM &&
-              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
-            ) {
-              hunkCoverage.mark(filename, targetHunk, 'reviewed')
-              lgtmCount += 1
-              continue
-            }
-            if (context.payload.pull_request == null) {
-              warning('No pull request found, skipping.')
-              continue
-            }
-            const message = anchor.adjusted
-              ? `> Attached to a changed line within the model's original range ${review.startLine}-${review.endLine}.
-
-${review.comment}`
-              : review.comment
-
-            try {
-              await commenter.bufferReviewComment(
-                filename,
-                anchor.startLine,
-                anchor.endLine,
-                message
-              )
-              hunkCoverage.mark(filename, targetHunk, 'reviewed')
-              reviewCount += 1
-            } catch (e: any) {
-              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
-              reviewsFailed.push(`${filename} comment failed (${e as string})`)
-            }
+          }
+          for (const hunkIndex of structured.reviewedHunks) {
+            hunkCoverage.mark(filename, hunkIndex, 'reviewed')
           }
         } catch (e: any) {
           warning(

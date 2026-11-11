@@ -5,12 +5,13 @@ import {readFileSync} from 'node:fs'
 const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8')
 const commenter = readFileSync(new URL('../src/commenter.ts', import.meta.url), 'utf8')
 
-test('production review uses diff-coordinate guard before buffering inline comments', () => {
-  const anchor = review.indexOf('const anchor = resolveReviewAnchor(')
-  const buffer = review.indexOf('await commenter.bufferReviewComment(')
-  assert.ok(anchor >= 0 && buffer > anchor)
-  assert.match(review, /if \(!anchor\.valid\)/)
-  assert.doesNotMatch(review, /bestPatchStartLine/)
+test('production review validates full JSON and source evidence before buffering', () => {
+  const validator = review.indexOf('processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)')
+  const buffer = review.indexOf('await commenter.bufferReviewComment(', validator)
+  assert.ok(validator >= 0 && buffer > validator)
+  const protocol = readFileSync(new URL('../src/review-protocol.ts', import.meta.url), 'utf8')
+  assert.match(protocol, /addedLines\.includes\(line\)/)
+  assert.match(protocol, /evidence\.trim\(\) !== added\.texts\.get\(line\)/)
 })
 
 test('completed head marker depends on publisher acknowledgement', () => {
@@ -35,7 +36,7 @@ test('success guard rejects legacy SHA markers without a completion marker', () 
   assert.match(review, /highestReviewedCommitId === context\.payload\.pull_request\.head\.sha &&\s*existingSummarizeCmtBody\.includes\(REVIEW_COMPLETE_TAG\)/)
 })
 
-test('substantive bug feedback containing LGTM is not discarded', () => {
+test('structured findings do not rely on substring LGTM filtering', () => {
   assert.doesNotMatch(review, /review\.comment\.includes\('LGTM'\)/)
-  assert.match(review, /review\.comment\.trim\(\)/)
+  assert.match(review, /for \(const finding of structured\.comments\)/)
 })
