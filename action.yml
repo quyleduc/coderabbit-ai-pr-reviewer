@@ -144,6 +144,10 @@ inputs:
     required: false
     description: 'Disable release notes'
     default: 'false'
+  llm_provider:
+    required: false
+    description: 'Explicit model provider: openai (default) or openrouter. OpenRouter requires OPENROUTER_API_KEY and uses a fixed HTTPS endpoint.'
+    default: 'openai'
   openai_base_url:
     required: false
     description: 'The url of the openai api interface.'
