@@ -23,6 +23,29 @@ jobs:
       - name: Controlled embedded-C fixture benchmark (mock, no credentials)
         run: node --experimental-strip-types scripts/controlled-model-eval.mjs --mock
 
+  dependency-audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Diagnose locked npm vulnerabilities (read only)
+        shell: bash
+        run: |
+          npm audit --json > /tmp/pr-audit.json || true
+          node -e '
+          const a = require("/tmp/pr-audit.json")
+          console.log("AUDIT COUNTS", JSON.stringify(a.metadata?.vulnerabilities ?? {}))
+          for (const [name, entry] of Object.entries(a.vulnerabilities ?? {})) {
+            console.log("AUDIT", JSON.stringify({name,severity:entry.severity,isDirect:entry.isDirect,via:entry.via?.map(x=>typeof x==="string"?x:{name:x.name,range:x.range,title:x.title}),fixAvailable:entry.fixAvailable,range:entry.range}))
+          }
+          '
   build-action:
     runs-on: ubuntu-latest
     steps:
