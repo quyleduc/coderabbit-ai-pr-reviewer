@@ -4,6 +4,7 @@
  * OpenAI-compatible URL cannot receive its key.
  */
 export interface LlmEnvironment {
+  [name: string]: string | undefined
   OPENAI_API_KEY?: string
   OPENROUTER_API_KEY?: string
   OPENAI_API_ORG?: string
