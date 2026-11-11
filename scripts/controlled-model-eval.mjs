@@ -5,6 +5,7 @@ import {Prompts} from '../src/prompts.ts'
 import {splitPatch, parsePatch, buildChangedLineIndex} from '../src/diff-hunks.ts'
 import {processStructuredReview} from '../src/review-protocol.ts'
 import {requestResponsesText} from '../src/responses-client.ts'
+import {resolveLlmConnection} from '../src/llm-provider.ts'
 
 const FIXTURES_URL = new URL('../tests/fixtures/embedded-c-review.json', import.meta.url)
 
@@ -111,9 +112,11 @@ export async function runEvaluationSuite(fixtures, generate) {
  * Direct, opt-in OpenAI Responses API probe; strictly no GitHub SDK,
  * checkpoint writes, source/prompt logging or persistent response storage.
  */
-export async function requestModelResponse({prompt, apiKey, model, fetcher = fetch}) {
+export async function requestModelResponse({prompt, apiKey, model, provider = 'openai', fetcher = fetch}) {
+  const connection = resolveLlmConnection(provider,
+    provider === 'openrouter' ? {OPENROUTER_API_KEY: apiKey} : {OPENAI_API_KEY: apiKey})
   return requestResponsesText({
-    apiKey,
+    ...connection,
     model,
     prompt,
     fetcher,
@@ -130,13 +133,15 @@ async function main() {
   const live = args.length === 1 && args[0] === '--live'
   if (!mock && !live) throw new Error('Select exactly --mock or --live')
   const fixtures = JSON.parse(readFileSync(FIXTURES_URL, 'utf8'))
-  if (live && (!process.env.OPENAI_API_KEY || !process.env.OPENAI_MODEL)) {
-    throw new Error('Live probe requires OPENAI_API_KEY and OPENAI_MODEL')
+  const provider = process.env.LLM_PROVIDER || 'openai'
+  const connection = live ? resolveLlmConnection(provider, process.env) : null
+  if (live && !process.env.OPENAI_MODEL) {
+    throw new Error('Live probe requires an explicit model')
   }
   const result = await runEvaluationSuite(fixtures, async (fixture, prompt) =>
     mock ? JSON.stringify(fixture.mock_response) :
       requestModelResponse({
-        prompt, apiKey:process.env.OPENAI_API_KEY, model:process.env.OPENAI_MODEL
+        prompt, apiKey:connection?.apiKey, model:process.env.OPENAI_MODEL, provider
       })
   )
   // Do not print source, prompt, model output, or API credentials.
