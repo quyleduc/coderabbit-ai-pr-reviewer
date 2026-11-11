@@ -89,18 +89,31 @@ test('wrong or missing findings cannot post or checkpoint',async()=>{
   }),/expected|finding|match/i)
   assert.equal(writes,0)
 })
-test('already published acceptance scope never writes a second review',async()=>{
-  let writes=0
+test('already published bot review does not duplicate but reconciles missing checkpoint',async()=>{
+  let reviewWrites=0,checkpointWrites=0
   const result=await runControlledAcceptance({...base(),mode:'publish',
     isPublished:async()=>true,hasPendingReview:async()=>false,
     verifyPublished:async()=>true,
     model:async()=>{throw Error('no duplicate model call')},
     fetchCurrent:async()=>pr,
-    writeReview:async()=>{writes++},
-    writeCheckpoint:async()=>{writes++}
+    writeReview:async()=>{reviewWrites++},
+    writeCheckpoint:async()=>{checkpointWrites++}
   })
-  assert.equal(result.status,'already_published')
-  assert.equal(writes,0)
+  assert.equal(result.status,'already_published_checkpoint_reconciled')
+  assert.equal(reviewWrites,0)
+  assert.equal(checkpointWrites,1)
+})
+
+test('an unverified remote review marker cannot authorize checkpoint repair',async()=>{
+  let checkpointWrites=0
+  await assert.rejects(runControlledAcceptance({...base(),mode:'publish',
+    isPublished:async()=>true,hasPendingReview:async()=>false,
+    verifyPublished:async()=>false,
+    model:async()=>{throw Error('no model')},fetchCurrent:async()=>pr,
+    writeReview:async()=>{throw Error('no new review')},
+    writeCheckpoint:async()=>{checkpointWrites++}
+  }),/verification|unconfirmed|remote/i)
+  assert.equal(checkpointWrites,0)
 })
 test('pending bot review blocks duplicate publication',async()=>{
   let writes=0
