@@ -1,0 +1,41 @@
+name: Controlled live model evaluation (no GitHub writes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type LIVE_MODEL_EVAL_ONLY to authorize a paid read-only model benchmark'
+        required: true
+        type: string
+      model:
+        description: 'OpenAI Responses API model ID (explicitly selected)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  evaluation:
+    # Only trusted default-branch code is permitted to access the model key.
+    if: github.ref == 'refs/heads/main' && inputs.confirm == 'LIVE_MODEL_EVAL_ONLY'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: controlled-live-model-evaluation
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          submodules: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Controlled benchmark (Responses API only, no GitHub writes)
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model }}
+        run: node --experimental-strip-types scripts/controlled-model-eval.mjs --live

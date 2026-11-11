@@ -1,9 +1,8 @@
 import './fetch-polyfill'
 
-import {info, setFailed, warning} from '@actions/core'
+import {info} from '@actions/core'
 import {
   ChatGPTAPI,
-  ChatGPTError,
   ChatMessage,
   SendMessageOptions
   // eslint-disable-next-line import/no-unresolved
@@ -53,18 +52,8 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
     }
   }
 
-  chat = async (message: string, ids: Ids): Promise<[string, Ids]> => {
-    let res: [string, Ids] = ['', {}]
-    try {
-      res = await this.chat_(message, ids)
-      return res
-    } catch (e: unknown) {
-      if (e instanceof ChatGPTError) {
-        warning('OpenAI review request failed')
-      }
-      return res
-    }
-  }
+  chat = async (message: string, ids: Ids): Promise<[string, Ids]> =>
+    this.chat_(message, ids)
 
   private readonly chat_ = async (
     message: string,
@@ -72,8 +61,8 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
   ): Promise<[string, Ids]> => {
     // record timing
     const start = Date.now()
-    if (!message) {
-      return ['', {}]
+    if (!message.trim()) {
+      throw new Error('OpenAI request prompt is empty')
     }
 
     let response: ChatMessage | undefined
@@ -89,10 +78,9 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
         response = await pRetry(() => this.api!.sendMessage(message, opts), {
           retries: this.options.openaiRetries
         })
-      } catch (e: unknown) {
-        if (e instanceof ChatGPTError) {
-          warning('OpenAI request failed after configured retries')
-        }
+      } catch {
+        // Never echo provider errors that may contain source, key or prompt.
+        throw new Error('OpenAI request failed after configured retries')
       }
       const end = Date.now()
       info(
@@ -101,14 +89,12 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
         } ms`
       )
     } else {
-      setFailed('The OpenAI API is not initialized')
+      throw new Error('The OpenAI API is not initialized')
     }
-    let responseText = ''
-    if (response != null) {
-      responseText = response.text
-    } else {
-      warning('openai response is null')
+    if (!response || typeof response.text !== 'string' || !response.text.trim()) {
+      throw new Error('OpenAI model returned an empty response')
     }
+    let responseText = response.text
     // remove the prefix "with " in the response
     if (responseText.startsWith('with ')) {
       responseText = responseText.substring(5)
