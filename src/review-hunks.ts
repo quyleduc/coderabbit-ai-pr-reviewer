@@ -1,4 +1,4 @@
-import {type CoverageStatus, assessReviewCompletion} from './review-integrity'
+import {type CoverageStatus} from './review-integrity'
 import {type ChangedLineIndex} from './diff-hunks'
 
 /** File/hunk-local IDs exist only for the current immutable review scope. */
@@ -61,10 +61,10 @@ export class HunkCoverage {
     }
   }
 
-  assess(acknowledged: boolean) {
+  snapshot() {
     const expectedIds = [...this.statuses.keys()]
     const entries = [...this.statuses].map(([id, status]) => ({id, status}))
-    return assessReviewCompletion(expectedIds, entries, acknowledged)
+    return {expectedIds, entries}
   }
 
   get(path: string, index: number): CoverageStatus | undefined {
