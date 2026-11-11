@@ -44,24 +44,25 @@ export function planReviewPublication(
   candidates: readonly PublishCandidate[],
   existingCommentBodies: readonly string[]
 ): {pending: PublishCandidate[]; suppressed: number} {
-  const seen = new Set<string>()
-  for (const body of existingCommentBodies) {
-    for (const fp of publishedFingerprints(body)) seen.add(fp)
-  }
+  // A marker-looking string may appear inside model output or be quoted by
+  // another comment. It is not proof that the particular body was published.
+  // Only an exact previously-published body with the expected path/range hash
+  // may suppress an identical candidate on rerun.
+  const canonical = (value: string) => value.replace(/\r\n/g, '\n').trimEnd()
+  const existing = new Set(existingCommentBodies.map(canonical))
+  const withinRun = new Set<string>()
   const pending: PublishCandidate[] = []
   let suppressed = 0
   for (const candidate of candidates) {
     const fp = publicationFingerprint(candidate)
-    if (seen.has(fp)) {
+    const message = candidate.message.trimEnd() +
+      '\n\n<!-- ' + MARKER_PREFIX + fp + ' -->'
+    if (withinRun.has(fp) || existing.has(canonical(message))) {
       suppressed++
       continue
     }
-    seen.add(fp)
-    pending.push({
-      ...candidate,
-      message: candidate.message.trimEnd() +
-        '\n\n<!-- ' + MARKER_PREFIX + fp + ' -->'
-    })
+    withinRun.add(fp)
+    pending.push({...candidate, message})
   }
   return {pending, suppressed}
 }
