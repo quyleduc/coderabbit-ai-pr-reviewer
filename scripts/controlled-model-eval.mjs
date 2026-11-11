@@ -126,8 +126,12 @@ export async function requestModelResponse({prompt, apiKey, model, provider = 'o
     retryEmptyOutput: true,
     // The controlled benchmark needs room for a reasoning model's final answer.
     // Production Bot transport defaults are unchanged.
-    reasoningEffort: reasoningEffort === undefined
-      ? (provider === 'openrouter' ? 'low' : undefined) : reasoningEffort,
+    reasoningEffort: reasoningEffort === 'omit' ||
+      (reasoningEffort === undefined &&
+       provider === 'openrouter' && model === 'google/gemma-4-31b-it:free')
+      ? undefined
+      : reasoningEffort === undefined
+        ? (provider === 'openrouter' ? 'low' : undefined) : reasoningEffort,
     maxOutputTokens: maxOutputTokens === undefined
       ? (provider === 'openrouter' ? 8192 : 3000) : maxOutputTokens,
     timeoutMs: provider === 'openrouter' ? 120000 : 90000,
@@ -233,7 +237,7 @@ async function main() {
     // Only allow bounded options from trusted workflow dispatch.
     const effort = process.env.LLM_REASONING_EFFORT || 'auto'
     const budget = process.env.LLM_MAX_OUTPUT_TOKENS
-    if (!['auto','none','low','medium','high'].includes(effort) ||
+    if (!['auto','omit','none','low','medium','high'].includes(effort) ||
         (budget !== undefined && !['auto','3000','8192','12000'].includes(budget))) {
       throw new Error('Invalid controlled reasoning or output budget setting')
     }

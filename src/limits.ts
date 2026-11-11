@@ -6,7 +6,12 @@ export class TokenLimits {
 
   constructor(model = 'gpt-3.5-turbo') {
     this.knowledgeCutOff = '2021-09-01'
-    if (model === 'gpt-6.1-sol') {
+    // M1 free OpenRouter preset: conservative operational cap (model context is
+    // much larger), enough room for evidence-backed JSON review output.
+    if (model === 'google/gemma-4-31b-it:free') {
+      this.maxTokens = 20000
+      this.responseTokens = 4096
+    } else if (model === 'gpt-6.1-sol') {
       this.maxTokens = 14000
       this.responseTokens = 5000
     } else if (model === 'gpt-6-luna') {
