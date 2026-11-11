@@ -4,6 +4,7 @@ import {readFileSync} from 'node:fs'
 
 const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8')
 const publisher = readFileSync(new URL('../src/commenter.ts', import.meta.url), 'utf8')
+const dedup = readFileSync(new URL('../src/review-dedup.ts', import.meta.url), 'utf8')
 
 test('production reviewer registers and accounts for every parsed hunk', () => {
   assert.match(review, /new HunkCoverage\(\)/)
@@ -33,8 +34,9 @@ test('publisher reconciles existing comments without destructive old-comment del
 })
 
 test('bot identity validation prevents untrusted comment markers from suppressing findings', () => {
-  assert.match(publisher, /comment\.user\?\.login === 'github-actions\[bot\]'/)
-  assert.match(publisher, /throw new Error\('Review-comment pagination exceeds safety limit'\)/)
+  assert.match(publisher, /'github-actions\[bot\]'/)
+  assert.match(dedup, /comment\.user\?\.login === trustedLogin/)
+  assert.match(dedup, /throw new Error\('Review-comment pagination exceeds safety limit'\)/)
 })
 
 test('publisher only confirms completion after GitHub API acknowledgement', () => {
