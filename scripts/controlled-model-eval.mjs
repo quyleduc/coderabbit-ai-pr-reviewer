@@ -132,6 +132,35 @@ export async function requestModelResponse({prompt, apiKey, model, provider = 'o
  * errors from the provider, model, untrusted source or protocol parser.
  * A typed HTTP status is safe; upstream response bodies never are.
  */
+/** Strict source-backed review errors are fixed by our validator, not by the provider.
+ * Only these exact messages are allowed to become diagnostic reason codes.
+ */
+const protocolFailureReasons = Object.freeze({
+  'Review protocol requires one valid JSON object': 'PROTOCOL_INVALID_JSON',
+  'Invalid review root schema fields': 'PROTOCOL_ROOT_SCHEMA',
+  'Missing or excess hunk verdicts': 'PROTOCOL_HUNK_COVERAGE',
+  'Invalid hunk id': 'PROTOCOL_HUNK_ID',
+  'Unexpected hunk id': 'PROTOCOL_HUNK_ID',
+  'Duplicate hunk id': 'PROTOCOL_HUNK_ID',
+  'Hunk status and findings disagree': 'PROTOCOL_STATUS_FINDINGS',
+  'Invalid finding schema fields': 'PROTOCOL_FINDING_SCHEMA',
+  'Finding line is not an added line in its hunk': 'PROTOCOL_LINE_MISMATCH',
+  'Finding evidence does not match added source line': 'PROTOCOL_EVIDENCE_MISMATCH',
+  'Invalid rule_id': 'PROTOCOL_RULE_ID',
+  'Invalid severity': 'PROTOCOL_SEVERITY',
+  'Invalid finding message': 'PROTOCOL_MESSAGE',
+  'Review protocol exceeds response size limit': 'PROTOCOL_TOO_LARGE',
+  'Unsupported review protocol version': 'PROTOCOL_VERSION',
+  'Invalid hunks array': 'PROTOCOL_HUNK_COVERAGE',
+  'Invalid hunk schema fields': 'PROTOCOL_HUNK_SCHEMA',
+  'Invalid hunk status': 'PROTOCOL_STATUS_FINDINGS',
+  'Invalid findings array': 'PROTOCOL_FINDINGS_ARRAY',
+  'Invalid finding line': 'PROTOCOL_LINE_MISMATCH',
+  'Invalid diff or expected hunk count': 'PROTOCOL_INVALID_DIFF',
+  'Diff hunk count mismatch': 'PROTOCOL_INVALID_DIFF',
+  'Overlapping diff hunks': 'PROTOCOL_INVALID_DIFF'
+})
+
 export function classifyEvaluationFailure(error, stage, fixtureIndex) {
   const safeStage = ['setup', 'model_request', 'review_validation'].includes(stage)
     ? stage : 'unknown'
@@ -143,7 +172,8 @@ export function classifyEvaluationFailure(error, stage, fixtureIndex) {
     reason = /^Missing (?:OpenAI|OpenRouter) provider credentials$/.test(message)
       ? 'MISSING_CREDENTIALS' : 'SETUP_FAILED'
   } else if (safeStage === 'review_validation') {
-    reason = 'REVIEW_PROTOCOL_REJECTED'
+    reason = Object.prototype.hasOwnProperty.call(protocolFailureReasons, message)
+      ? protocolFailureReasons[message] : 'REVIEW_PROTOCOL_REJECTED'
   } else if (safeStage === 'model_request') {
     const status = /^OpenAI HTTP ([1-5][0-9]{2})$/.exec(message)
     if (status) reason = 'HTTP_' + status[1]
