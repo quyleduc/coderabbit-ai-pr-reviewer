@@ -873,7 +873,10 @@ ${
       })),
       publishConfirmed
     )
-    const hunkCompletion = hunkCoverage.assess(publishConfirmed)
+    const hunkSnapshot = hunkCoverage.snapshot()
+    const hunkCompletion = assessReviewCompletion(
+      hunkSnapshot.expectedIds, hunkSnapshot.entries, publishConfirmed
+    )
     const completion = {
       complete: fileCompletion.complete && hunkCompletion.complete,
       blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
