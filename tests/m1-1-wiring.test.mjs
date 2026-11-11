@@ -52,3 +52,11 @@ test('Compare API 300-file truncation is fail-closed', () => {
   assert.match(review, /incrementalFiles\.length >= 300 \|\| targetBranchFiles\.length >= 300/)
   assert.match(review, /compareCommits may have truncated files at 300/)
 })
+
+
+test('incomplete, stale and truncated reviews fail the CI check explicitly', () => {
+  assert.match(review, /setFailed\('Review incomplete; no latest-head checkpoint recorded'\)/)
+  assert.match(review, /setFailed\('PR head\/base changed or cannot be verified/)
+  assert.match(review, /setFailed\('Review blocked: compareCommits may have truncated files at 300'\)/)
+  assert.match(review, /setFailed\('Cannot complete review: eligible file patches unavailable'\)/)
+})
