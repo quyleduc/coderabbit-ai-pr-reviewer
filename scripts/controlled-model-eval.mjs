@@ -123,6 +123,7 @@ export async function requestModelResponse({prompt, apiKey, model, provider = 'o
     // The opt-in fixture benchmark tolerates one transient empty provider reply.
     // Never retry schema/evidence rejection or interpret a blank reply as clean.
     retries: 1,
+    retryRateLimits: !model.endsWith(':free'),
     retryEmptyOutput: true,
     // The controlled benchmark needs room for a reasoning model's final answer.
     // Production Bot transport defaults are unchanged.

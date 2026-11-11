@@ -14,6 +14,8 @@ export interface ResponsesRequest {
   reasoningEffort?: string
   timeoutMs?: number
   retries?: number
+  /** Set false for rate-limited free-model requests to avoid futile quota retries. */
+  retryRateLimits?: boolean
   /** Only explicitly opted-in callers retry a completed but empty response. */
   retryEmptyOutput?: boolean
   fetcher?: (url: string, init: RequestInit) => Promise<{
@@ -124,6 +126,7 @@ export async function requestResponsesText({
   reasoningEffort,
   timeoutMs = 120000,
   retries = 2,
+  retryRateLimits = true,
   retryEmptyOutput = false,
   fetcher = fetch,
   delay = pause
@@ -146,6 +149,9 @@ export async function requestResponsesText({
   }
   if (typeof retryEmptyOutput !== 'boolean') {
     throw new Error('Invalid empty-output retry setting')
+  }
+  if (typeof retryRateLimits !== 'boolean') {
+    throw new Error('Invalid rate-limit retry setting')
   }
   if (reasoningEffort !== undefined &&
       !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)) {
@@ -188,7 +194,7 @@ export async function requestResponsesText({
     if (!response.ok) {
       const retryable = response.status === 408 || response.status === 429 ||
         (response.status >= 500 && response.status < 600)
-      if (retryable && attempt < retries) {
+      if (retryable && (response.status !== 429 || retryRateLimits) && attempt < retries) {
         await delay(Math.min(1000 * 2 ** attempt, 10000))
         continue
       }
