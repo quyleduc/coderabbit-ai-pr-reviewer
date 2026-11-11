@@ -49,8 +49,8 @@ async function run(): Promise<void> {
       new OpenAIOptions(options.openaiLightModel, options.lightTokenLimits)
     )
   } catch (e: any) {
-    warning(
-      `Skipped: failed to create summary bot, please check your openai_api_key: ${e}, backtrace: ${e.stack}`
+    setFailed(
+      `Unable to create summary bot: verify openai_api_key and model configuration: ${e}`
     )
     return
   }
@@ -62,8 +62,8 @@ async function run(): Promise<void> {
       new OpenAIOptions(options.openaiHeavyModel, options.heavyTokenLimits)
     )
   } catch (e: any) {
-    warning(
-      `Skipped: failed to create review bot, please check your openai_api_key: ${e}, backtrace: ${e.stack}`
+    setFailed(
+      `Unable to create review bot: verify openai_api_key and model configuration: ${e}`
     )
     return
   }
