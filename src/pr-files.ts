@@ -15,20 +15,21 @@ export interface PullRequestDiffFile {
 export async function loadCompletePullRequestFiles<T extends {filename: string}>(
   expectedFileCount: number,
   fetchPage: (page: number, perPage: number) => Promise<readonly T[]>,
-  {pageSize = 100}: {pageSize?: number} = {}
+  {pageSize = 100, maxPages = 30}: {pageSize?: number; maxPages?: number} = {}
 ): Promise<T[]> {
   if (!Number.isSafeInteger(expectedFileCount) ||
       expectedFileCount < 1 || expectedFileCount > 3000) {
     throw new RangeError('Invalid or unsupported PR changed_files count (limit 3000)')
   }
-  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100) {
-    throw new RangeError('Invalid PR files page size')
+  if (!Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
+      !Number.isSafeInteger(maxPages) || maxPages < 1 || maxPages > 3000) {
+    throw new RangeError('Invalid PR files page size or page limit')
   }
 
   const files: T[] = []
   const seen = new Set<string>()
   for (let page = 1; files.length < expectedFileCount; page++) {
-    if (page > Math.ceil(3000 / pageSize)) {
+    if (page > Math.min(maxPages, Math.ceil(3000 / pageSize))) {
       throw new Error('PR files pagination safety limit exceeded')
     }
     const data = await fetchPage(page, pageSize)
