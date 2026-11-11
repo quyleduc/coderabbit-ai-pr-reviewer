@@ -19,6 +19,7 @@ const response = hunks => JSON.stringify({version: 1, hunks})
 test('structured protocol acknowledges every expected hunk and emits evidence-backed findings', () => {
   const result = processStructuredReview(response([clean, issue]), index, patch, 2)
   assert.deepEqual(result.reviewedHunks, [0, 1])
+  assert.deepEqual(result.cleanHunks, [0])
   assert.equal(result.comments.length, 1)
   assert.equal(result.comments[0].startLine, 8)
   assert.equal(result.comments[0].endLine, 8)
@@ -89,4 +90,39 @@ test('end-to-end deterministic fake model to fake GitHub publication', async () 
   assert.equal(fakeCalls[0].request.comments[0].path, 'src/driver.c')
   assert.equal(fakeCalls[0].request.comments[0].line, 8)
   assert.equal(fakeCalls[1].id, 44)
+})
+
+
+test('model output with incorrect source evidence cannot reach GitHub publisher', async () => {
+  const fakeModel = async () => response([
+    clean,
+    {...issue, findings: [{...issue.findings[0], evidence: 'madeUp();'}]}
+  ])
+  let mutations = 0
+  const github = {
+    createReview: async () => {mutations++; return 10},
+    submitReview: async () => {mutations++},
+    discardPendingReview: async () => {mutations++}
+  }
+  await assert.rejects(
+    async () => {
+      const verified = processStructuredReview(await fakeModel(), index, patch, 2)
+      const pending = planReviewPublication(
+        verified.comments.map(c => ({path: 'src/driver.c', ...c})), []
+      )
+      await publishReviewBatch(pending.pending, 'sha', 'status', github)
+    },
+    /evidence/
+  )
+  assert.equal(mutations, 0)
+})
+
+test('substantive messages containing LGTM remain findings', () => {
+  const modified = {
+    ...issue,
+    findings: [{...issue.findings[0], message: 'The LGTM status is wrong because this branch misses the null check.'}]
+  }
+  const verified = processStructuredReview(response([clean, modified]), index, patch, 2)
+  assert.equal(verified.comments.length, 1)
+  assert.match(verified.comments[0].message, /LGTM/)
 })
