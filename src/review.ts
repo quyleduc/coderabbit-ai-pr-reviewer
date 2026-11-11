@@ -16,6 +16,7 @@ import {Inputs} from './inputs'
 import {octokit} from './octokit'
 import {type Options} from './options'
 import {type Prompts} from './prompts'
+import {parsePatch, patchStartEndLine, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
 
 // eslint-disable-next-line camelcase
@@ -752,114 +753,6 @@ ${
 
   // post the final summary comment
   await commenter.comment(`${summarizeComment}`, SUMMARIZE_TAG, 'replace')
-}
-
-const splitPatch = (patch: string | null | undefined): string[] => {
-  if (patch == null) {
-    return []
-  }
-
-  const pattern = /(^@@ -(\d+),(\d+) \+(\d+),(\d+) @@).*$/gm
-
-  const result: string[] = []
-  let last = -1
-  let match: RegExpExecArray | null
-  while ((match = pattern.exec(patch)) !== null) {
-    if (last === -1) {
-      last = match.index
-    } else {
-      result.push(patch.substring(last, match.index))
-      last = match.index
-    }
-  }
-  if (last !== -1) {
-    result.push(patch.substring(last))
-  }
-  return result
-}
-
-const patchStartEndLine = (
-  patch: string
-): {
-  oldHunk: {startLine: number; endLine: number}
-  newHunk: {startLine: number; endLine: number}
-} | null => {
-  const pattern = /(^@@ -(\d+),(\d+) \+(\d+),(\d+) @@)/gm
-  const match = pattern.exec(patch)
-  if (match != null) {
-    const oldBegin = parseInt(match[2])
-    const oldDiff = parseInt(match[3])
-    const newBegin = parseInt(match[4])
-    const newDiff = parseInt(match[5])
-    return {
-      oldHunk: {
-        startLine: oldBegin,
-        endLine: oldBegin + oldDiff - 1
-      },
-      newHunk: {
-        startLine: newBegin,
-        endLine: newBegin + newDiff - 1
-      }
-    }
-  } else {
-    return null
-  }
-}
-
-const parsePatch = (
-  patch: string
-): {oldHunk: string; newHunk: string} | null => {
-  const hunkInfo = patchStartEndLine(patch)
-  if (hunkInfo == null) {
-    return null
-  }
-
-  const oldHunkLines: string[] = []
-  const newHunkLines: string[] = []
-
-  let newLine = hunkInfo.newHunk.startLine
-
-  const lines = patch.split('\n').slice(1) // Skip the @@ line
-
-  // Remove the last line if it's empty
-  if (lines[lines.length - 1] === '') {
-    lines.pop()
-  }
-
-  // Skip annotations for the first 3 and last 3 lines
-  const skipStart = 3
-  const skipEnd = 3
-
-  let currentLine = 0
-
-  const removalOnly = !lines.some(line => line.startsWith('+'))
-
-  for (const line of lines) {
-    currentLine++
-    if (line.startsWith('-')) {
-      oldHunkLines.push(`${line.substring(1)}`)
-    } else if (line.startsWith('+')) {
-      newHunkLines.push(`${newLine}: ${line.substring(1)}`)
-      newLine++
-    } else {
-      // context line
-      oldHunkLines.push(`${line}`)
-      if (
-        removalOnly ||
-        (currentLine > skipStart && currentLine <= lines.length - skipEnd)
-      ) {
-        newHunkLines.push(`${newLine}: ${line}`)
-      } else {
-        newHunkLines.push(`${line}`)
-      }
-      newLine++
-    }
-  }
-
-  return {
-    oldHunk: oldHunkLines.join('\n'),
-    newHunk: newHunkLines.join('\n')
-  }
 }
 
 interface Review {
