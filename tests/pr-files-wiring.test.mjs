@@ -36,3 +36,10 @@ test('checkpoint replay skip is bound to both base AND head SHA', () => {
   assert.match(review, /existingSummarizeCmtBody\.includes\(currentScopeMarker\)/)
   assert.match(review, /\$\{currentScopeMarker\}/)
 })
+
+
+test('read-only live smoke exercises the same production pagination and patch checks', () => {
+  const smoke = readFileSync(new URL('../scripts/read-only-review-smoke.mjs', import.meta.url), 'utf8')
+  assert.match(smoke, /loadCompletePullRequestFiles\(/)
+  assert.match(smoke, /verifyPullRequestPatch\(/)
+})
