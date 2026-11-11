@@ -68,8 +68,9 @@ test('fails closed on multiple files, binary, outside acceptance folder, metadat
 
 test('acceptance scope marker changes on either head or base to block stale replays',()=>{
   const a=validateAcceptanceTarget(options,pull(),[file])
-  const b=validateAcceptanceTarget({...options,expectedHead:SHA_B},pull({
-    head:{sha:SHA_B,ref:'acceptance/null-pointer',repo:{full_name:options.repository}}
+  const newHead='c'.repeat(40)
+  const b=validateAcceptanceTarget({...options,expectedHead:newHead},pull({
+    head:{sha:newHead,ref:'acceptance/null-pointer',repo:{full_name:options.repository}}
   }),[file])
   assert.notEqual(acceptanceScopeMarker(a),acceptanceScopeMarker(b))
 })
