@@ -2,7 +2,7 @@ import {getInput, info, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import {octokit} from './octokit'
-import {planReviewPublication} from './review-dedup'
+import {loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -237,33 +237,22 @@ ${COMMENT_TAG}`
    * This avoids duplicate publication when GitHub requests fail.
    */
   private async publishedBotCommentBodies(pullNumber: number): Promise<string[]> {
-    const bodies: string[] = []
-    for (let page = 1; page <= 1000; page++) {
-      const response = await octokit.pulls.listReviewComments({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber,
-        // eslint-disable-next-line camelcase
-        per_page: 100,
-        page
-      })
-      if (!Array.isArray(response.data)) {
-        throw new Error('Unexpected GitHub review comments response')
-      }
-      for (const comment of response.data) {
-        // An untrusted PR author may write arbitrary marker-looking HTML.
-        if (
-          comment.user?.login === 'github-actions[bot]' &&
-          typeof comment.body === 'string' &&
-          comment.body.includes(COMMENT_TAG)
-        ) {
-          bodies.push(comment.body)
-        }
-      }
-      if (response.data.length < 100) return bodies
-    }
-    throw new Error('Review-comment pagination exceeds safety limit')
+    return loadTrustedPublishedBodies(
+      async (page, perPage) => {
+        const response = await octokit.pulls.listReviewComments({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          per_page: perPage,
+          page
+        })
+        return response.data
+      },
+      'github-actions[bot]',
+      COMMENT_TAG
+    )
   }
 
   async submitReview(pullNumber: number, commitId: string, statusMsg: string): Promise<boolean> {
