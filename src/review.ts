@@ -1,4 +1,4 @@
-import {error, info, warning} from '@actions/core'
+import {error, info, setFailed, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import pLimit from 'p-limit'
@@ -147,7 +147,7 @@ export const codeReview = async (
   // A response at the cap cannot prove the full PR was acquired.
   // Fail closed until a paginated PR-files/Git-diff acquisition path exists.
   if (incrementalFiles.length >= 300 || targetBranchFiles.length >= 300) {
-    warning('Review blocked: compareCommits may have truncated files at 300')
+    setFailed('Review blocked: compareCommits may have truncated files at 300')
     return
   }
 
@@ -286,7 +286,7 @@ ${hunks.oldHunk}
   >
 
   if (filesAndChanges.length === 0) {
-    error('Skipped: no files to review')
+    setFailed('Cannot complete review: eligible file patches unavailable')
     return
   }
 
@@ -862,7 +862,7 @@ ${
       warning(`Cannot verify current PR head: ${e as string}`)
     }
     if (!scopeFresh) {
-      warning('PR head/base changed or cannot be verified; refusing stale review publication')
+      setFailed('PR head/base changed or cannot be verified; refusing stale review publication')
       return
     }
 
@@ -906,6 +906,7 @@ ${
       summarizeComment += `\n> Partial review: latest head SHA not checkpointed
       (unprocessed or failed units: ${completion.blockers.length}).`
       warning(`Partial review: ${completion.blockers.join(', ')}`)
+      setFailed('Review incomplete; no latest-head checkpoint recorded')
     }
   }
 
