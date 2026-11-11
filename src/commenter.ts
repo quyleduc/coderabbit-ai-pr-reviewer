@@ -2,7 +2,7 @@ import {getInput, info, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import {octokit} from './octokit'
-import {loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
+import {findTrustedTaggedComment, loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
 import {publishReviewBatch} from './review-publication'
 
 // eslint-disable-next-line camelcase
@@ -596,13 +596,10 @@ ${chain}
   async findCommentWithTag(tag: string, target: number) {
     try {
       const comments = await this.listComments(target)
-      for (const cmt of comments) {
-        if (cmt.body && cmt.body.includes(tag)) {
-          return cmt
-        }
-      }
-
-      return null
+      // HTML markers are not authentication: a PR author can forge them.
+      // Only metadata-authenticated comments from our publishing identity
+      // are allowed to supply review state or be replaced by the bot.
+      return findTrustedTaggedComment(comments, tag, 'github-actions[bot]')
     } catch (e: unknown) {
       warning(`Failed to find comment with tag: ${e}`)
       throw e
