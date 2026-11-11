@@ -79,3 +79,9 @@ test('bad credentials and model setup fail the Action visibly', () => {
   assert.match(main, /setFailed\(\s*[\s\S]*?Unable to create review bot/)
   assert.doesNotMatch(main, /Skipped: failed to create (?:summary|review) bot/)
 })
+
+
+test('review checkpoints are loaded only from authenticated bot comments', () => {
+  assert.match(publisher, /findTrustedTaggedComment\(comments, tag, 'github-actions\[bot\]'\)/)
+  assert.match(dedup, /comment\.user\?\.login === trustedLogin/)
+})
