@@ -212,9 +212,8 @@ export async function smokeReadOnlyPullRequest({
 async function main() {
   const eventPath = process.env.GITHUB_EVENT_PATH
   const repository = process.env.GITHUB_REPOSITORY
-  const token = process.env.GITHUB_TOKEN
-  if (!eventPath || !repository || !token) {
-    throw new Error('Read-only PR smoke requires Actions event, repository and read-only token')
+  if (!eventPath || !repository) {
+    throw new Error('Read-only PR smoke requires GitHub Actions event and public repository')
   }
   const event = JSON.parse(readFileSync(eventPath, 'utf8'))
   const number = event.pull_request?.number
@@ -231,7 +230,7 @@ async function main() {
     const response = await fetch(endpoint, {
       headers: {
         accept: 'application/vnd.github+json',
-        authorization: 'Bearer ' + token,
+        'user-agent': 'coderabbit-readonly-smoke',
         'x-github-api-version': '2022-11-28'
       }
     })
