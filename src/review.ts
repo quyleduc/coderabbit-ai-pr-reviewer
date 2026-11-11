@@ -592,7 +592,9 @@ ${
       // loop to calculate total patch tokens
       let patchesToPack = 0
       for (const [index, [, , patch]] of patches.entries()) {
-        const patchTokens = getTokenCount('review_hunk id=h' + index + '\n' + patch)
+        const patchTokens = getTokenCount(
+          '---review_hunk id=h' + index + '---\n' + patch + '\n---end_change_section---'
+        )
         if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
           info(
             `only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`
