@@ -33,7 +33,9 @@ test('publisher API reports failures instead of swallowing all of them', () => {
 })
 
 test('success guard rejects legacy SHA markers without a completion marker', () => {
-  assert.match(review, /highestReviewedCommitId === context\.payload\.pull_request\.head\.sha &&\s*existingSummarizeCmtBody\.includes\(REVIEW_COMPLETE_TAG\)/)
+  assert.match(review, /existingSummarizeCmtBody\.includes\(REVIEW_COMPLETE_TAG\)/)
+  assert.match(review, /existingSummarizeCmtBody\.includes\(currentScopeMarker\)/)
+  assert.match(review, /commenter\.getReviewedCommitIds\(existingCommitIdsBlock\)/)
 })
 
 test('structured findings do not rely on substring LGTM filtering', () => {
