@@ -77,10 +77,11 @@ test('rerun plan does not mutate its input and original message remains', () => 
 
 test('strict pagination reads every page and trusts only authenticated bot', async () => {
   const tag = '<!-- CodeRabbit review -->'
-  const marker = planReviewPublication([finding], []).pending[0].message
+  const taggedFinding = {...finding, message: finding.message + '\n\n' + tag}
+  const marker = planReviewPublication([taggedFinding], []).pending[0].message
   const pages = [
-    [{user: {login: 'untrusted-user'}, body: marker + tag},
-     {user: {login: 'github-actions[bot]'}, body: marker + tag}],
+    [{user: {login: 'untrusted-user'}, body: marker},
+     {user: {login: 'github-actions[bot]'}, body: marker}],
     [{user: {login: 'github-actions[bot]'}, body: tag + ' another'},
      {user: {login: 'other[bot]'}, body: marker + tag}],
     []
@@ -92,7 +93,7 @@ test('strict pagination reads every page and trusts only authenticated bot', asy
   }, 'github-actions[bot]', tag, 2)
   assert.equal(bodies.length, 2)
   assert.deepEqual(visited, [[1, 2], [2, 2], [3, 2]])
-  assert.equal(planReviewPublication([finding], bodies).pending.length, 0)
+  assert.equal(planReviewPublication([taggedFinding], bodies).pending.length, 0)
 })
 
 test('GitHub read failure cannot become an empty trusted comment history', async () => {
