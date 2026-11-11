@@ -26,7 +26,8 @@ test('completed head marker depends on publisher acknowledgement', () => {
 test('publisher API reports failures instead of swallowing all of them', () => {
   assert.match(commenter, /submitReview\(pullNumber: number, commitId: string, statusMsg: string\): Promise<boolean>/)
   assert.match(commenter, /await octokit\.pulls\.submitReview\(/)
-  assert.match(commenter, /return true/)
+  assert.match(commenter, /await publishReviewBatch\(/)
+  assert.match(commenter, /return result\.confirmed/)
   assert.match(commenter, /return false/)
 })
 
