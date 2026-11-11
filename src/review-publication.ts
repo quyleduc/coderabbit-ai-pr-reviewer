@@ -56,7 +56,8 @@ export async function publishReviewBatch(
     const result: GitHubReviewComment = {
       path: comment.path,
       body: comment.message,
-      line: comment.endLine
+      line: comment.endLine,
+      side: 'RIGHT'
     }
     if (comment.startLine !== comment.endLine) {
       result.start_line = comment.startLine
