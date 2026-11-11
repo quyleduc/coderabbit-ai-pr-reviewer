@@ -18,12 +18,14 @@ import {type Options} from './options'
 import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
+import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 
 // eslint-disable-next-line camelcase
 const context = github_context
 const repo = context.repo
 
 const ignoreKeyword = '@coderabbitai: ignore'
+const REVIEW_COMPLETE_TAG = '<!-- coderabbit:review-complete-v1 -->'
 
 export const codeReview = async (
   lightBot: Bot,
@@ -94,6 +96,14 @@ export const codeReview = async (
   }
 
   if (
+    highestReviewedCommitId === context.payload.pull_request.head.sha &&
+    existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)
+  ) {
+    info('Review already completed for this head SHA, skipping duplicate run')
+    return
+  }
+
+  if (
     highestReviewedCommitId === '' ||
     highestReviewedCommitId === context.payload.pull_request.head.sha
   ) {
@@ -153,6 +163,13 @@ export const codeReview = async (
     } else {
       filterSelectedFiles.push(file)
     }
+  }
+
+  const fileCoverage = new Map<string, CoverageStatus>(
+    files.map(file => [file.filename, 'pending'])
+  )
+  for (const file of filterIgnoredFiles) {
+    fileCoverage.set(file.filename, 'ignored_by_policy')
   }
 
   if (filterSelectedFiles.length === 0) {
@@ -388,6 +405,10 @@ ${
   const summaries = (await Promise.all(summaryPromises)).filter(
     summary => summary !== null
   ) as Array<[string, string, boolean]>
+  const summarized = new Set(summaries.map(([filename]) => filename))
+  for (const [filename] of filesAndChanges) {
+    if (!summarized.has(filename)) fileCoverage.set(filename, 'failed_analysis')
+  }
 
   if (summaries.length > 0) {
     const batchSize = 10
@@ -520,6 +541,14 @@ ${
       )
       .map(([filename]) => filename)
 
+    for (const filename of reviewsSkipped) {
+      if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'triaged_trivial')
+      }
+    }
+
+    // A file may be only partially packed when exceeding the model budget.
+    const budgetSkipped = new Set<string>()
     // failed reviews array
     const reviewsFailed: string[] = []
     let lgtmCount = 0
@@ -555,6 +584,8 @@ ${
         tokens += patchTokens
         patchesToPack += 1
       }
+
+      if (patchesToPack < patches.length) budgetSkipped.add(filename)
 
       let patchesPacked = 0
       for (const [startLine, endLine, patch] of patches) {
@@ -637,6 +668,10 @@ ${commentChain}
           }
           // parse review
           const reviews = parseReview(response, patches, options.debug)
+          if (reviews.length === 0) {
+            reviewsFailed.push(`${filename} (unparseable model response)`)
+            return
+          }
           for (const review of reviews) {
             // Treat only stand-alone approval as LGTM, not substantive
             // bug reports that happen to mention the term "LGTM".
@@ -706,6 +741,23 @@ ${review.comment}`
 
     await Promise.all(reviewPromises)
 
+    for (const [filename] of filesAndChangesReview) {
+      if (fileCoverage.get(filename) === 'failed_analysis') continue
+      if (reviewsFailed.some(problem => problem.startsWith(`${filename} (`) ||
+          problem.startsWith(`${filename} comment failed`))) {
+        fileCoverage.set(filename, 'failed_analysis')
+      } else if (skippedFiles.includes(filename) || budgetSkipped.has(filename)) {
+        fileCoverage.set(filename, 'blocked_by_budget')
+      } else if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'reviewed')
+      }
+    }
+    for (const filename of skippedFiles) {
+      if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'blocked_by_budget')
+      }
+    }
+
     statusMsg += `
 ${
   reviewsFailed.length > 0
@@ -757,18 +809,39 @@ ${
 
 </details>
 `
-    // add existing_comment_ids_block with latest head sha
-    summarizeComment += `\n${commenter.addReviewedCommitId(
-      existingCommitIdsBlock,
-      context.payload.pull_request.head.sha
-    )}`
-
-    // post the review
-    await commenter.submitReview(
+    // Publishing is part of the transaction: a model response alone does
+    // not constitute a completed review. Never checkpoint partial coverage.
+    const published = await commenter.submitReview(
       context.payload.pull_request.number,
-      commits[commits.length - 1].sha,
+      context.payload.pull_request.head.sha,
       statusMsg
     )
+    const completion = assessReviewCompletion(
+      files.map(file => file.filename),
+      files.map(file => ({
+        id: file.filename,
+        status: fileCoverage.get(file.filename) ?? 'pending'
+      })),
+      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+    )
+
+    if (completion.complete) {
+      summarizeComment += `\n${commenter.addReviewedCommitId(
+        existingCommitIdsBlock,
+        context.payload.pull_request.head.sha
+      )}\n${REVIEW_COMPLETE_TAG}`
+    } else {
+      // Keep only earlier successful checkpoint IDs, never add the new head.
+      if (existingCommitIdsBlock) {
+        summarizeComment += `\n${existingCommitIdsBlock}`
+        if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
+          summarizeComment += `\n${REVIEW_COMPLETE_TAG}`
+        }
+      }
+      summarizeComment += `\n> Partial review: latest head SHA not checkpointed
+      (unprocessed or failed units: ${completion.blockers.length}).`
+      warning(`Partial review: ${completion.blockers.join(', ')}`)
+    }
   }
 
   // post the final summary comment
