@@ -104,6 +104,7 @@ export const codeReview = async (
   }
 
   if (
+    !existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG) ||
     highestReviewedCommitId === '' ||
     highestReviewedCommitId === context.payload.pull_request.head.sha
   ) {
