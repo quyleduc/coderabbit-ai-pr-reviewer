@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import {
   planReviewPublication,
   publicationFingerprint,
-  publishedFingerprints
+  publishedFingerprints,
+  loadTrustedPublishedBodies
 } from '../src/review-dedup.ts'
 
 const finding = {
@@ -71,4 +72,53 @@ test('rerun plan does not mutate its input and original message remains', () => 
   assert.deepEqual(input, [finding])
   assert.match(result.pending[0].message, /A null pointer may be dereferenced here/)
   assert.equal(result.pending[0].message.includes('<!-- coderabbit:published-finding-v1:'), true)
+})
+
+
+test('strict pagination reads every page and trusts only authenticated bot', async () => {
+  const tag = '<!-- CodeRabbit review -->'
+  const marker = planReviewPublication([finding], []).pending[0].message
+  const pages = [
+    [{user: {login: 'untrusted-user'}, body: marker + tag},
+     {user: {login: 'github-actions[bot]'}, body: marker + tag}],
+    [{user: {login: 'github-actions[bot]'}, body: tag + ' another'},
+     {user: {login: 'other[bot]'}, body: marker + tag}],
+    []
+  ]
+  const visited = []
+  const bodies = await loadTrustedPublishedBodies(async (page, perPage) => {
+    visited.push([page, perPage])
+    return pages[page - 1]
+  }, 'github-actions[bot]', tag, 2)
+  assert.equal(bodies.length, 2)
+  assert.deepEqual(visited, [[1, 2], [2, 2], [3, 2]])
+  assert.equal(planReviewPublication([finding], bodies).pending.length, 0)
+})
+
+test('GitHub read failure cannot become an empty trusted comment history', async () => {
+  await assert.rejects(
+    loadTrustedPublishedBodies(async () => {throw new Error('429 rate limited')},
+      'github-actions[bot]', '<!-- marker -->', 2),
+    /429 rate limited/
+  )
+})
+
+test('pagination ceiling is a hard error, not a successful partial history', async () => {
+  await assert.rejects(
+    loadTrustedPublishedBodies(async () => [
+      {user: {login: 'github-actions[bot]'}, body: '<!-- marker -->'}
+    ], 'github-actions[bot]', '<!-- marker -->', 1, 2),
+    /pagination exceeds safety limit/
+  )
+})
+
+test('invalid API data and configuration reject', async () => {
+  await assert.rejects(
+    loadTrustedPublishedBodies(async () => null, 'github-actions[bot]', '<!-- marker -->', 2),
+    /Unexpected GitHub/
+  )
+  await assert.rejects(
+    loadTrustedPublishedBodies(async () => [], '', '<!-- marker -->', 2),
+    TypeError
+  )
 })
