@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 import {resolveLlmConnection} from '../src/llm-provider.ts'
 import {requestResponsesText} from '../src/responses-client.ts'
+import {requestModelResponse} from '../scripts/controlled-model-eval.mjs'
 
 const env = {
   OPENAI_API_KEY: 'test-openai-only-secret',
@@ -69,6 +70,27 @@ test('OpenRouter model slug passes the shared Responses transport without leakin
   assert.ok(!JSON.stringify(calls).includes(env.OPENAI_API_KEY))
 })
 
+
+test('controlled model evaluator uses the same fixed OpenRouter endpoint and selected credential', async () => {
+  const calls = []
+  const result = await requestModelResponse({
+    provider: 'openrouter',
+    apiKey: env.OPENROUTER_API_KEY,
+    model: 'anthropic/claude-sonnet-4.6',
+    prompt: 'Return source-backed JSON review',
+    fetcher: async (url, init) => {
+      calls.push({url, init})
+      return {ok: true, status: 200, json: async () => done}
+    }
+  })
+  assert.equal(result, 'verified')
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://openrouter.ai/api/v1/responses')
+  assert.equal(calls[0].init.headers.authorization, 'Bearer ' + env.OPENROUTER_API_KEY)
+  assert.equal(calls[0].init.headers['openai-organization'], undefined)
+  assert.ok(!JSON.stringify(calls).includes(env.OPENAI_API_KEY))
+})
+
 test('invalid slash-model identifiers fail before network access', async () => {
   let calls = 0
   for (const model of ['/claude', 'anthropic/', 'anthropic//model', 'anthropic/model with spaces']) {
@@ -86,6 +108,8 @@ test('action, production bot and trusted workflows explicitly wire OpenRouter an
   assert.match(read('src/main.ts'), /getInput\('llm_provider'\)/)
   assert.match(read('src/bot.ts'), /resolveLlmConnection\(/)
   assert.match(read('.github/workflows/openai-review.yml'), /OPENROUTER_API_KEY/)
+  assert.match(read('.github/workflows/openai-review.yml'), /vars.LLM_PROVIDER == 'openrouter' && secrets.OPENROUTER_API_KEY/)
+  assert.match(read('.github/workflows/openai-review.yml'), /vars.LLM_PROVIDER != 'openrouter' && secrets.OPENAI_API_KEY/)
   assert.match(read('.github/workflows/openai-review.yml'), /ENABLE_AUTOMATED_PR_REVIEWS == 'true'/)
   assert.match(read('.github/workflows/controlled-live-eval.yml'), /OPENROUTER_API_KEY/)
   assert.match(read('.github/workflows/controlled-live-pr-acceptance.yml'), /OPENROUTER_API_KEY/)
