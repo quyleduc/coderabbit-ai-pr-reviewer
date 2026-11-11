@@ -19,6 +19,4 @@ jobs:
         with:
           node-version: '22'
       - name: Verify actual PR diff with synthetic model and fake GitHub review
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
         run: node --experimental-strip-types scripts/read-only-review-smoke.mjs
