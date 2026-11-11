@@ -19,6 +19,7 @@ import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
 import {processStructuredReview} from './review-protocol'
+import {loadCompletePullRequestFiles, verifyPullRequestPatch} from './pr-files'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
@@ -86,80 +87,69 @@ export const codeReview = async (
     )
   }
 
-  const allCommitIds = await commenter.getAllCommitIds()
-  // find highest reviewed commit id
-  let highestReviewedCommitId = ''
-  if (existingCommitIdsBlock !== '') {
-    highestReviewedCommitId = commenter.getHighestReviewedCommitId(
-      allCommitIds,
-      commenter.getReviewedCommitIds(existingCommitIdsBlock)
-    )
+  // Review full PR diff for each new head SHA. Compare API's first-page
+  // 300-file cap cannot prove an incremental subset is complete, so we
+  // deliberately trade extra model cost for auditable full-PR coverage.
+  // Bind replay suppression to BOTH base/head SHAs: base can be retargeted.
+  const currentScopeMarker = '<!-- coderabbit:review-scope-v1:' +
+    context.payload.pull_request.base.sha + ':' +
+    context.payload.pull_request.head.sha + ' -->'
+
+  let currentPR
+  try {
+    currentPR = await octokit.pulls.get({
+      owner: repo.owner,
+      repo: repo.repo,
+      // eslint-disable-next-line camelcase
+      pull_number: context.payload.pull_request.number
+    })
+  } catch (error) {
+    setFailed('Cannot acquire complete PR files: unable to verify PR metadata')
+    return
+  }
+  if (
+    currentPR.data.head.sha !== context.payload.pull_request.head.sha ||
+    currentPR.data.base.sha !== context.payload.pull_request.base.sha
+  ) {
+    setFailed('Cannot acquire complete PR files: stale PR head/base scope')
+    return
   }
 
   if (
-    highestReviewedCommitId === context.payload.pull_request.head.sha &&
-    existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)
-  ) {
-    info('Review already completed for this head SHA, skipping duplicate run')
-    return
-  }
-
-  if (
-    !existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG) ||
-    highestReviewedCommitId === '' ||
-    highestReviewedCommitId === context.payload.pull_request.head.sha
-  ) {
-    info(
-      `Will review from the base commit: ${
-        context.payload.pull_request.base.sha as string
-      }`
+    existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG) &&
+    existingSummarizeCmtBody.includes(currentScopeMarker) &&
+    commenter.getReviewedCommitIds(existingCommitIdsBlock).includes(
+      context.payload.pull_request.head.sha
     )
-    highestReviewedCommitId = context.payload.pull_request.base.sha
-  } else {
-    info(`Will review from commit: ${highestReviewedCommitId}`)
-  }
-
-  // Fetch the diff between the highest reviewed commit and the latest commit of the PR branch
-  const incrementalDiff = await octokit.repos.compareCommits({
-    owner: repo.owner,
-    repo: repo.repo,
-    base: highestReviewedCommitId,
-    head: context.payload.pull_request.head.sha
-  })
-
-  // Fetch the diff between the target branch's base commit and the latest commit of the PR branch
-  const targetBranchDiff = await octokit.repos.compareCommits({
-    owner: repo.owner,
-    repo: repo.repo,
-    base: context.payload.pull_request.base.sha,
-    head: context.payload.pull_request.head.sha
-  })
-
-  const incrementalFiles = incrementalDiff.data.files
-  const targetBranchFiles = targetBranchDiff.data.files
-
-  if (incrementalFiles == null || targetBranchFiles == null) {
-    warning('Skipped: files data is missing')
+  ) {
+    info('Review already completed for this base/head SHA scope, skipping duplicate run')
     return
   }
 
-  // GitHub compareCommits returns a maximum of 300 changed files.
-  // A response at the cap cannot prove the full PR was acquired.
-  // Fail closed until a paginated PR-files/Git-diff acquisition path exists.
-  if (incrementalFiles.length >= 300 || targetBranchFiles.length >= 300) {
-    setFailed('Review blocked: compareCommits may have truncated files at 300')
-    return
-  }
+  // Rebuild summaries for the new immutable PR scope. Reusing old model
+  // summaries here could cause incorrect conclusions about untouched files.
+  inputs.rawSummary = ''
+  inputs.shortSummary = ''
 
-  // Filter out any file that is changed compared to the incremental changes
-  const files = targetBranchFiles.filter(targetBranchFile =>
-    incrementalFiles.some(
-      incrementalFile => incrementalFile.filename === targetBranchFile.filename
+  let files
+  try {
+    files = await loadCompletePullRequestFiles(
+      currentPR.data.changed_files,
+      async (page, perPage) => {
+        const response = await octokit.pulls.listFiles({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: context.payload.pull_request!.number,
+          // eslint-disable-next-line camelcase
+          per_page: perPage,
+          page
+        })
+        return response.data
+      }
     )
-  )
-
-  if (files.length === 0) {
-    warning('Skipped: files is null')
+  } catch (error) {
+    setFailed('Cannot acquire complete PR files: ' + String(error))
     return
   }
 
@@ -187,10 +177,10 @@ export const codeReview = async (
     return
   }
 
-  const commits = incrementalDiff.data.commits
-
-  if (commits.length === 0) {
-    warning('Skipped: commits is null')
+  try {
+    for (const file of filterSelectedFiles) verifyPullRequestPatch(file)
+  } catch (error) {
+    setFailed('Cannot acquire complete PR files: ' + String(error))
     return
   }
 
@@ -258,9 +248,7 @@ ${hunks.oldHunk}
 
   let statusMsg = `<details>
 <summary>Commits</summary>
-Files that changed from the base of the PR and between ${highestReviewedCommitId} and ${
-    context.payload.pull_request.head.sha
-  } commits.
+Complete current PR diff between base ${context.payload.pull_request.base.sha} and head ${context.payload.pull_request.head.sha} (all changed files; no Compare API sampling)
 </details>
 ${
   filesAndChanges.length > 0
@@ -824,7 +812,7 @@ ${
       summarizeComment += `\n${commenter.addReviewedCommitId(
         existingCommitIdsBlock,
         context.payload.pull_request.head.sha
-      )}\n${REVIEW_COMPLETE_TAG}`
+      )}\n${REVIEW_COMPLETE_TAG}\n${currentScopeMarker}`
     } else {
       // Keep only earlier successful checkpoint IDs, never add the new head.
       if (existingCommitIdsBlock) {
