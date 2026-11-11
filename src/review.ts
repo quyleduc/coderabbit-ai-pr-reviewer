@@ -391,10 +391,9 @@ ${filename}: ${summary}
         {}
       )
       if (summarizeResp === '') {
-        warning('summarize: nothing obtained from openai')
-      } else {
-        inputs.rawSummary = summarizeResp
+        throw new Error('Missing consolidated summary response')
       }
+      inputs.rawSummary = summarizeResp
     }
   }
 
@@ -404,7 +403,7 @@ ${filename}: ${summary}
     {}
   )
   if (summarizeFinalResponse === '') {
-    info('summarize: nothing obtained from openai')
+    throw new Error('Missing final summary response')
   }
 
   if (options.disableReleaseNotes === false) {
@@ -434,6 +433,9 @@ ${filename}: ${summary}
     prompts.renderSummarizeShort(inputs),
     {}
   )
+  if (summarizeShortResponse === '') {
+    throw new Error('Missing short summary response')
+  }
   inputs.shortSummary = summarizeShortResponse
 
   let summarizeComment = `${summarizeFinalResponse}
@@ -583,7 +585,7 @@ ${
           )
 
           if (allChains.length > 0) {
-            info(`Found comment chains: ${allChains} for ${filename}`)
+            info(`Found existing comment chains for ${filename}`)
             commentChain = allChains
           }
         } catch (e: any) {
