@@ -1,4 +1,4 @@
-import {error, info, warning} from '@actions/core'
+import {info, setFailed, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import pLimit from 'p-limit'
@@ -18,7 +18,9 @@ import {type Options} from './options'
 import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
+import {parseReviewResponse} from './review-response'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
+import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -139,6 +141,14 @@ export const codeReview = async (
 
   if (incrementalFiles == null || targetBranchFiles == null) {
     warning('Skipped: files data is missing')
+    return
+  }
+
+  // GitHub compareCommits returns a maximum of 300 changed files.
+  // A response at the cap cannot prove the full PR was acquired.
+  // Fail closed until a paginated PR-files/Git-diff acquisition path exists.
+  if (incrementalFiles.length >= 300 || targetBranchFiles.length >= 300) {
+    setFailed('Review blocked: compareCommits may have truncated files at 300')
     return
   }
 
@@ -277,8 +287,13 @@ ${hunks.oldHunk}
   >
 
   if (filesAndChanges.length === 0) {
-    error('Skipped: no files to review')
+    setFailed('Cannot complete review: eligible file patches unavailable')
     return
+  }
+
+  const hunkCoverage = new HunkCoverage()
+  for (const [filename, , , patches] of filesAndChanges) {
+    hunkCoverage.registerFile(filename, patches.length)
   }
 
   let statusMsg = `<details>
@@ -545,6 +560,7 @@ ${
     for (const filename of reviewsSkipped) {
       if (fileCoverage.get(filename) === 'pending') {
         fileCoverage.set(filename, 'triaged_trivial')
+        hunkCoverage.markFile(filename, 'triaged_trivial')
       }
     }
 
@@ -565,8 +581,9 @@ ${
       const ins: Inputs = inputs.clone()
       ins.filename = filename
       const changedLineIndex = buildChangedLineIndex(fileDiff)
-      if (!changedLineIndex.valid) {
-        reviewsFailed.push(`${filename} (invalid diff: ${changedLineIndex.reason})`)
+      if (!changedLineIndex.valid || changedLineIndex.hunks.length !== patches.length) {
+        reviewsFailed.push(`${filename} (invalid or incomplete diff)`)
+        hunkCoverage.markFile(filename, 'failed_analysis')
         return
       }
 
@@ -587,6 +604,7 @@ ${
       }
 
       if (patchesToPack < patches.length) budgetSkipped.add(filename)
+      hunkCoverage.markPacked(filename, patchesToPack)
 
       let patchesPacked = 0
       for (const [startLine, endLine, patch] of patches) {
@@ -599,9 +617,7 @@ ${
           info(
             `unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`
           )
-          if (options.debug) {
-            info(`prompt so far: ${prompts.renderReviewFileDiff(ins)}`)
-          }
+          if (options.debug) info('Review prompt exceeds token budget')
           break
         }
         patchesPacked += 1
@@ -665,31 +681,43 @@ ${commentChain}
           if (response === '') {
             info('review: nothing obtained from openai')
             reviewsFailed.push(`${filename} (no response)`)
+            hunkCoverage.markFile(filename, 'failed_analysis')
             return
           }
           // parse review
-          const reviews = parseReview(response, patches, options.debug)
+          const reviews = parseReviewResponse(response)
           if (reviews.length === 0) {
             reviewsFailed.push(`${filename} (unparseable model response)`)
+            hunkCoverage.markFile(filename, 'failed_analysis')
             return
           }
           for (const review of reviews) {
-            // Treat only stand-alone approval as LGTM, not substantive
-            // bug reports that happen to mention the term "LGTM".
-            if (
-              !options.reviewCommentLGTM &&
-              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
-            ) {
-              lgtmCount += 1
+            const targetHunk = hunkIndexForRange(
+              changedLineIndex, review.startLine, review.endLine
+            )
+            if (targetHunk === null || targetHunk >= patchesToPack) {
+              reviewsFailed.push(`${filename} (model feedback outside reviewed hunks)`)
               continue
             }
+            // Validate every feedback coordinate, including LGTM, against a changed line.
             const anchor = resolveReviewAnchor(
               changedLineIndex,
               review.startLine,
               review.endLine
             )
             if (!anchor.valid) {
+              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
               reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
+              continue
+            }
+            // Treat only stand-alone approval as LGTM, not substantive
+            // bug reports that happen to mention the term "LGTM".
+            if (
+              !options.reviewCommentLGTM &&
+              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
+            ) {
+              hunkCoverage.mark(filename, targetHunk, 'reviewed')
+              lgtmCount += 1
               continue
             }
             if (context.payload.pull_request == null) {
@@ -709,8 +737,10 @@ ${review.comment}`
                 anchor.endLine,
                 message
               )
+              hunkCoverage.mark(filename, targetHunk, 'reviewed')
               reviewCount += 1
             } catch (e: any) {
+              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
               reviewsFailed.push(`${filename} comment failed (${e as string})`)
             }
           }
@@ -721,7 +751,9 @@ ${review.comment}`
             }`
           )
           reviewsFailed.push(`${filename} (${e as string})`)
+          hunkCoverage.markFile(filename, 'failed_analysis')
         }
+        hunkCoverage.markUnacknowledged(filename, patchesPacked)
       } else {
         reviewsSkipped.push(`${filename} (diff too large)`)
       }
@@ -756,6 +788,7 @@ ${review.comment}`
     for (const filename of skippedFiles) {
       if (fileCoverage.get(filename) === 'pending') {
         fileCoverage.set(filename, 'blocked_by_budget')
+        hunkCoverage.markFile(filename, 'blocked_by_budget')
       }
     }
 
@@ -812,19 +845,50 @@ ${
 `
     // Publishing is part of the transaction: a model response alone does
     // not constitute a completed review. Never checkpoint partial coverage.
+    // Recheck immutable PR scope immediately before any inline publishing.
+    // If the PR changed while the LLM was running, its comments are stale.
+    let scopeFresh = false
+    try {
+      const current = await octokit.pulls.get({
+        owner: repo.owner,
+        repo: repo.repo,
+        // eslint-disable-next-line camelcase
+        pull_number: context.payload.pull_request.number
+      })
+      scopeFresh =
+        current.data.head.sha === context.payload.pull_request.head.sha &&
+        current.data.base.sha === context.payload.pull_request.base.sha
+    } catch (e: any) {
+      warning(`Cannot verify current PR head: ${e as string}`)
+    }
+    if (!scopeFresh) {
+      setFailed('PR head/base changed or cannot be verified; refusing stale review publication')
+      return
+    }
+
     const published = await commenter.submitReview(
       context.payload.pull_request.number,
       context.payload.pull_request.head.sha,
       statusMsg
     )
-    const completion = assessReviewCompletion(
+    const publishConfirmed =
+      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+    const fileCompletion = assessReviewCompletion(
       files.map(file => file.filename),
       files.map(file => ({
         id: file.filename,
         status: fileCoverage.get(file.filename) ?? 'pending'
       })),
-      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+      publishConfirmed
     )
+    const hunkSnapshot = hunkCoverage.snapshot()
+    const hunkCompletion = assessReviewCompletion(
+      hunkSnapshot.expectedIds, hunkSnapshot.entries, publishConfirmed
+    )
+    const completion = {
+      complete: fileCompletion.complete && hunkCompletion.complete,
+      blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
+    }
 
     if (completion.complete) {
       summarizeComment += `\n${commenter.addReviewedCommitId(
@@ -842,129 +906,10 @@ ${
       summarizeComment += `\n> Partial review: latest head SHA not checkpointed
       (unprocessed or failed units: ${completion.blockers.length}).`
       warning(`Partial review: ${completion.blockers.join(', ')}`)
+      setFailed('Review incomplete; no latest-head checkpoint recorded')
     }
   }
 
   // post the final summary comment
   await commenter.comment(`${summarizeComment}`, SUMMARIZE_TAG, 'replace')
-}
-
-interface Review {
-  startLine: number
-  endLine: number
-  comment: string
-}
-
-function parseReview(
-  response: string,
-  patches: Array<[number, number, string]>,
-  debug = false
-): Review[] {
-  const reviews: Review[] = []
-
-  response = sanitizeResponse(response.trim())
-
-  const lines = response.split('\n')
-  const lineNumberRangeRegex = /(?:^|\s)(\d+)-(\d+):\s*$/
-  const commentSeparator = '---'
-
-  let currentStartLine: number | null = null
-  let currentEndLine: number | null = null
-  let currentComment = ''
-  function storeReview(): void {
-    if (currentStartLine !== null && currentEndLine !== null) {
-      const review: Review = {
-        startLine: currentStartLine,
-        endLine: currentEndLine,
-        comment: currentComment
-      }
-
-      // Never move an invalid model range to a distant hunk.
-      // The changed-line validator in doReview decides whether it is safe
-      // to publish an inline comment.
-      reviews.push(review)
-
-      info(
-        `Stored comment for line range ${currentStartLine}-${currentEndLine}: ${currentComment.trim()}`
-      )
-    }
-  }
-
-  function sanitizeCodeBlock(comment: string, codeBlockLabel: string): string {
-    const codeBlockStart = `\`\`\`${codeBlockLabel}`
-    const codeBlockEnd = '```'
-    const lineNumberRegex = /^ *(\d+): /gm
-
-    let codeBlockStartIndex = comment.indexOf(codeBlockStart)
-
-    while (codeBlockStartIndex !== -1) {
-      const codeBlockEndIndex = comment.indexOf(
-        codeBlockEnd,
-        codeBlockStartIndex + codeBlockStart.length
-      )
-
-      if (codeBlockEndIndex === -1) break
-
-      const codeBlock = comment.substring(
-        codeBlockStartIndex + codeBlockStart.length,
-        codeBlockEndIndex
-      )
-      const sanitizedBlock = codeBlock.replace(lineNumberRegex, '')
-
-      comment =
-        comment.slice(0, codeBlockStartIndex + codeBlockStart.length) +
-        sanitizedBlock +
-        comment.slice(codeBlockEndIndex)
-
-      codeBlockStartIndex = comment.indexOf(
-        codeBlockStart,
-        codeBlockStartIndex +
-          codeBlockStart.length +
-          sanitizedBlock.length +
-          codeBlockEnd.length
-      )
-    }
-
-    return comment
-  }
-
-  function sanitizeResponse(comment: string): string {
-    comment = sanitizeCodeBlock(comment, 'suggestion')
-    comment = sanitizeCodeBlock(comment, 'diff')
-    return comment
-  }
-
-  for (const line of lines) {
-    const lineNumberRangeMatch = line.match(lineNumberRangeRegex)
-
-    if (lineNumberRangeMatch != null) {
-      storeReview()
-      currentStartLine = parseInt(lineNumberRangeMatch[1], 10)
-      currentEndLine = parseInt(lineNumberRangeMatch[2], 10)
-      currentComment = ''
-      if (debug) {
-        info(`Found line number range: ${currentStartLine}-${currentEndLine}`)
-      }
-      continue
-    }
-
-    if (line.trim() === commentSeparator) {
-      storeReview()
-      currentStartLine = null
-      currentEndLine = null
-      currentComment = ''
-      if (debug) {
-        info('Found comment separator')
-      }
-      continue
-    }
-
-    if (currentStartLine !== null && currentEndLine !== null) {
-      currentComment += `${line}\n`
-    }
-  }
-
-  storeReview()
-
-  return reviews
 }

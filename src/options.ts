@@ -72,7 +72,7 @@ export class Options {
     info(`review_simple_changes: ${this.reviewSimpleChanges}`)
     info(`review_comment_lgtm: ${this.reviewCommentLGTM}`)
     info(`path_filters: ${this.pathFilters}`)
-    info(`system_message: ${this.systemMessage}`)
+    info('system_message: [configured]')
     info(`openai_light_model: ${this.openaiLightModel}`)
     info(`openai_heavy_model: ${this.openaiHeavyModel}`)
     info(`openai_model_temperature: ${this.openaiModelTemperature}`)
@@ -82,7 +82,7 @@ export class Options {
     info(`github_concurrency_limit: ${this.githubConcurrencyLimit}`)
     info(`summary_token_limits: ${this.lightTokenLimits.string()}`)
     info(`review_token_limits: ${this.heavyTokenLimits.string()}`)
-    info(`api_base_url: ${this.apiBaseUrl}`)
+    info('api_base_url: [configured]')
     info(`language: ${this.language}`)
   }
 

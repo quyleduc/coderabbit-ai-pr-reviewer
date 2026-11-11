@@ -15,16 +15,19 @@ test('production review uses diff-coordinate guard before buffering inline comme
 
 test('completed head marker depends on publisher acknowledgement', () => {
   const publisher = review.indexOf('const published = await commenter.submitReview(')
-  const completion = review.indexOf('const completion = assessReviewCompletion(')
+  const completion = review.indexOf('const fileCompletion = assessReviewCompletion(')
+  const hunkCompletion = review.indexOf('const hunkCompletion = assessReviewCompletion(')
   const marker = review.indexOf('if (completion.complete)')
-  assert.ok(publisher >= 0 && publisher < completion && completion < marker)
+  assert.ok(publisher >= 0 && publisher < completion && completion < hunkCompletion && hunkCompletion < marker)
   assert.match(review, /published && summariesFailed\.length === 0 && reviewsFailed\.length === 0/)
   assert.match(review, /latest head SHA not checkpointed/)
 })
 
 test('publisher API reports failures instead of swallowing all of them', () => {
   assert.match(commenter, /submitReview\(pullNumber: number, commitId: string, statusMsg: string\): Promise<boolean>/)
-  assert.match(commenter, /return allPublished/)
+  assert.match(commenter, /await octokit\.pulls\.submitReview\(/)
+  assert.match(commenter, /await publishReviewBatch\(/)
+  assert.match(commenter, /return result\.confirmed/)
   assert.match(commenter, /return false/)
 })
 

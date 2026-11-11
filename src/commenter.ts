@@ -2,6 +2,8 @@ import {getInput, info, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import {octokit} from './octokit'
+import {findTrustedTaggedComment, loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
+import {publishReviewBatch} from './review-publication'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -231,140 +233,102 @@ ${COMMENT_TAG}`
     }
   }
 
-  async submitReview(pullNumber: number, commitId: string, statusMsg: string): Promise<boolean> {
-    const body = `${COMMENT_GREETING}
-
-${statusMsg}
-`
-
-    if (this.reviewCommentsBuffer.length === 0) {
-      // Submit empty review with statusMsg
-      info(`Submitting empty review for PR #${pullNumber}`)
-      try {
-        await octokit.pulls.createReview({
+  /**
+   * Strict remote read: API errors must not look like an empty comment history.
+   * This avoids duplicate publication when GitHub requests fail.
+   */
+  private async publishedBotCommentBodies(pullNumber: number): Promise<string[]> {
+    return loadTrustedPublishedBodies(
+      async (page, perPage) => {
+        const response = await octokit.pulls.listReviewComments({
           owner: repo.owner,
           repo: repo.repo,
           // eslint-disable-next-line camelcase
           pull_number: pullNumber,
           // eslint-disable-next-line camelcase
-          commit_id: commitId,
-          event: 'COMMENT',
-          body
+          per_page: perPage,
+          page
         })
-        return true
-      } catch (e) {
-        warning(`Failed to submit empty review: ${e}`)
-        return false
-      }
-    }
-    for (const comment of this.reviewCommentsBuffer) {
-      const comments = await this.getCommentsAtRange(
-        pullNumber,
-        comment.path,
-        comment.startLine,
-        comment.endLine
-      )
-      for (const c of comments) {
-        if (c.body.includes(COMMENT_TAG)) {
-          info(
-            `Deleting review comment for ${comment.path}:${comment.startLine}-${comment.endLine}: ${comment.message}`
-          )
-          try {
-            await octokit.pulls.deleteReviewComment({
-              owner: repo.owner,
-              repo: repo.repo,
-              // eslint-disable-next-line camelcase
-              comment_id: c.id
-            })
-          } catch (e) {
-            warning(`Failed to delete review comment: ${e}`)
-          }
-        }
-      }
-    }
+        return response.data
+      },
+      'github-actions[bot]',
+      COMMENT_TAG
+    )
+  }
 
-    await this.deletePendingReview(pullNumber)
+  async submitReview(pullNumber: number, commitId: string, statusMsg: string): Promise<boolean> {
+    const body = COMMENT_GREETING + '\n\n' + statusMsg + '\n'
 
-    const generateCommentData = (comment: any) => {
-      const commentData: any = {
-        path: comment.path,
-        body: comment.message,
-        line: comment.endLine
-      }
-
-      if (comment.startLine !== comment.endLine) {
-        // eslint-disable-next-line camelcase
-        commentData.start_line = comment.startLine
-        // eslint-disable-next-line camelcase
-        commentData.start_side = 'RIGHT'
-      }
-
-      return commentData
-    }
-
+    let pending: Array<{
+      path: string
+      startLine: number
+      endLine: number
+      message: string
+    }>
     try {
-      const review = await octokit.pulls.createReview({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber,
-        // eslint-disable-next-line camelcase
-        commit_id: commitId,
-        comments: this.reviewCommentsBuffer.map(comment =>
-          generateCommentData(comment)
-        )
-      })
-
-      info(
-        `Submitting review for PR #${pullNumber}, total comments: ${this.reviewCommentsBuffer.length}, review id: ${review.data.id}`
-      )
-
-      await octokit.pulls.submitReview({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber,
-        // eslint-disable-next-line camelcase
-        review_id: review.data.id,
-        event: 'COMMENT',
-        body
-      })
-      return true
-    } catch (e) {
-      warning(
-        `Failed to create review: ${e}. Falling back to individual comments.`
-      )
-      await this.deletePendingReview(pullNumber)
-      let commentCounter = 0
-      let allPublished = true
-      for (const comment of this.reviewCommentsBuffer) {
-        info(
-          `Creating new review comment for ${comment.path}:${comment.startLine}-${comment.endLine}: ${comment.message}`
-        )
-        const commentData: any = {
-          owner: repo.owner,
-          repo: repo.repo,
-          // eslint-disable-next-line camelcase
-          pull_number: pullNumber,
-          // eslint-disable-next-line camelcase
-          commit_id: commitId,
-          ...generateCommentData(comment)
-        }
-
-        try {
-          await octokit.pulls.createReviewComment(commentData)
-        } catch (ee) {
-          allPublished = false
-          warning(`Failed to create review comment: ${ee}`)
-        }
-
-        commentCounter++
-        info(
-          `Comment ${commentCounter}/${this.reviewCommentsBuffer.length} posted`
-        )
+      const existingBodies = await this.publishedBotCommentBodies(pullNumber)
+      const plan = planReviewPublication(this.reviewCommentsBuffer, existingBodies)
+      pending = plan.pending
+      if (plan.suppressed > 0) {
+        info('Suppressed ' + plan.suppressed + ' duplicate review findings')
       }
-      return allPublished
+    } catch (e) {
+      warning('Failed to verify existing review comments, refusing publication: ' + e)
+      return false
     }
+
+    if (pending.length === 0 && this.reviewCommentsBuffer.length > 0) {
+      // All findings already exist; do not create a duplicate review.
+      return true
+    }
+
+    const result = await publishReviewBatch(
+      pending,
+      commitId,
+      body,
+      {
+        createReview: async request => {
+          const response = await octokit.pulls.createReview({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: pullNumber,
+            // eslint-disable-next-line camelcase
+            commit_id: request.commitId,
+            body: request.body,
+            event: request.event,
+            comments: request.comments
+          })
+          return response.data.id
+        },
+        submitReview: async (reviewId, message) => {
+          await octokit.pulls.submitReview({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: pullNumber,
+            // eslint-disable-next-line camelcase
+            review_id: reviewId,
+            event: 'COMMENT',
+            body: message
+          })
+        },
+        discardPendingReview: async reviewId => {
+          await octokit.pulls.deletePendingReview({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: pullNumber,
+            // eslint-disable-next-line camelcase
+            review_id: reviewId
+          })
+        }
+      }
+    )
+    if (!result.confirmed) {
+      warning('Unable to confirm GitHub review publication: ' + result.error)
+    }
+    return result.confirmed
   }
 
   async reviewCommentReply(
@@ -605,6 +569,7 @@ ${chain}
       }
     } catch (e) {
       warning(`Failed to create comment: ${e}`)
+      throw e
     }
   }
 
@@ -624,22 +589,20 @@ ${chain}
       }
     } catch (e) {
       warning(`Failed to replace comment: ${e}`)
+      throw e
     }
   }
 
   async findCommentWithTag(tag: string, target: number) {
     try {
       const comments = await this.listComments(target)
-      for (const cmt of comments) {
-        if (cmt.body && cmt.body.includes(tag)) {
-          return cmt
-        }
-      }
-
-      return null
+      // HTML markers are not authentication: a PR author can forge them.
+      // Only metadata-authenticated comments from our publishing identity
+      // are allowed to supply review state or be replaced by the bot.
+      return findTrustedTaggedComment(comments, tag, 'github-actions[bot]')
     } catch (e: unknown) {
       warning(`Failed to find comment with tag: ${e}`)
-      return null
+      throw e
     }
   }
 
@@ -674,7 +637,7 @@ ${chain}
       return allComments
     } catch (e: any) {
       warning(`Failed to list comments: ${e}`)
-      return allComments
+      throw e
     }
   }
 
