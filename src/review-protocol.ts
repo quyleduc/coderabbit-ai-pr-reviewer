@@ -1,4 +1,4 @@
-import {type ChangedLineIndex, patchStartEndLine, splitPatch} from './diff-hunks'
+import type {ChangedLineIndex} from './diff-hunks'
 
 export interface StructuredReviewComment {
   startLine: number
@@ -39,25 +39,24 @@ function parseJsonResponse(text: string): unknown {
   }
 }
 
-function addedSourceLines(diff: string): Map<number, string> {
-  const result = new Map<number, string>()
-  for (const hunk of splitPatch(diff)) {
-    const range = patchStartEndLine(hunk)
-    if (!range) throw new Error('Invalid diff hunk')
-    let line = range.newHunk.startLine
-    const lines = hunk.split(/\r?\n/).slice(1)
-    if (lines[lines.length - 1] === '') lines.pop()
-    for (const source of lines) {
-      if (source.startsWith('+')) {
-        if (result.has(line)) throw new Error('Overlapping diff hunks')
-        result.set(line, source.slice(1).trim())
-        line++
-      } else if (source.startsWith(' ')) {
-        line++
-      }
+function addedSourceLines(diff: string): {texts: Map<number, string>; hunks: number} {
+  const texts = new Map<number, string>()
+  let cursor = 0
+  let hunks = 0
+  for (const source of diff.split(/\r?\n/)) {
+    const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(source)
+    if (header) {
+      cursor = Number(header[1])
+      hunks++
+    } else if (hunks > 0 && source.startsWith('+')) {
+      if (texts.has(cursor)) throw new Error('Overlapping diff hunks')
+      texts.set(cursor, source.slice(1).trim())
+      cursor++
+    } else if (hunks > 0 && source.startsWith(' ')) {
+      cursor++
     }
   }
-  return result
+  return {texts, hunks}
 }
 
 /**
@@ -77,7 +76,7 @@ export function processStructuredReview(
       !Number.isSafeInteger(packedHunks) ||
       packedHunks < 1 ||
       packedHunks > changed.hunks.length ||
-      changed.hunks.length !== splitPatch(diff).length) {
+      !diff.trim()) {
     throw new Error('Invalid diff or expected hunk count')
   }
   const root = parseJsonResponse(response)
@@ -89,6 +88,9 @@ export function processStructuredReview(
   }
 
   const added = addedSourceLines(diff)
+  if (added.hunks !== changed.hunks.length) {
+    throw new Error('Diff hunk count mismatch')
+  }
   const seen = new Set<number>()
   const comments: StructuredReviewComment[] = []
   for (const rawHunk of root.hunks) {
@@ -123,7 +125,7 @@ export function processStructuredReview(
       }
       if (typeof finding.evidence !== 'string' ||
           !finding.evidence.trim() ||
-          finding.evidence.trim() !== added.get(line)) {
+          finding.evidence.trim() !== added.texts.get(line)) {
         throw new Error('Finding evidence does not match added source line')
       }
       if (typeof finding.rule_id !== 'string' ||
