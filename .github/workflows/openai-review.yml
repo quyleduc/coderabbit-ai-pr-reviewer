@@ -30,6 +30,17 @@ jobs:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
           submodules: false
+      # The committed dist bundle is historical; rebuild from trusted
+      # default-branch sources so source fixes are actually used by the action.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+      - name: Build trusted local action
+        run: |
+          npm ci
+          npm run build
+          npm run package
       - uses: ./
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
