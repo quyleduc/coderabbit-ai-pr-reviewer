@@ -597,6 +597,7 @@ ${chain}
       }
     } catch (e) {
       warning(`Failed to create comment: ${e}`)
+      throw e
     }
   }
 
@@ -616,6 +617,7 @@ ${chain}
       }
     } catch (e) {
       warning(`Failed to replace comment: ${e}`)
+      throw e
     }
   }
 
@@ -631,7 +633,7 @@ ${chain}
       return null
     } catch (e: unknown) {
       warning(`Failed to find comment with tag: ${e}`)
-      return null
+      throw e
     }
   }
 
@@ -666,7 +668,7 @@ ${chain}
       return allComments
     } catch (e: any) {
       warning(`Failed to list comments: ${e}`)
-      return allComments
+      throw e
     }
   }
 
