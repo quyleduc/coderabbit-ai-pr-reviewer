@@ -701,16 +701,7 @@ ${commentChain}
               reviewsFailed.push(`${filename} (model feedback outside reviewed hunks)`)
               continue
             }
-            // Treat only stand-alone approval as LGTM, not substantive
-            // bug reports that happen to mention the term "LGTM".
-            if (
-              !options.reviewCommentLGTM &&
-              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
-            ) {
-              hunkCoverage.mark(filename, targetHunk, 'reviewed')
-              lgtmCount += 1
-              continue
-            }
+            // Validate every feedback coordinate, including LGTM, against a changed line.
             const anchor = resolveReviewAnchor(
               changedLineIndex,
               review.startLine,
@@ -719,6 +710,16 @@ ${commentChain}
             if (!anchor.valid) {
               hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
               reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
+              continue
+            }
+            // Treat only stand-alone approval as LGTM, not substantive
+            // bug reports that happen to mention the term "LGTM".
+            if (
+              !options.reviewCommentLGTM &&
+              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
+            ) {
+              hunkCoverage.mark(filename, targetHunk, 'reviewed')
+              lgtmCount += 1
               continue
             }
             if (context.payload.pull_request == null) {
