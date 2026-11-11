@@ -1,4 +1,4 @@
-import {error, info, setFailed, warning} from '@actions/core'
+import {info, setFailed, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import pLimit from 'p-limit'
