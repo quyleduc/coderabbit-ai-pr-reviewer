@@ -3,6 +3,7 @@ import {getInput, info, warning} from '@actions/core'
 import {context as github_context} from '@actions/github'
 import {octokit} from './octokit'
 import {loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
+import {publishReviewBatch} from './review-publication'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -281,82 +282,53 @@ ${COMMENT_TAG}`
       return true
     }
 
-    if (pending.length === 0) {
-      try {
-        await octokit.pulls.createReview({
-          owner: repo.owner,
-          repo: repo.repo,
-          // eslint-disable-next-line camelcase
-          pull_number: pullNumber,
-          // eslint-disable-next-line camelcase
-          commit_id: commitId,
-          event: 'COMMENT',
-          body
-        })
-        return true
-      } catch (e) {
-        warning('Failed to submit empty review: ' + e)
-        return false
-      }
-    }
-
-    const comments = pending.map(comment => {
-      const commentData: any = {
-        path: comment.path,
-        body: comment.message,
-        line: comment.endLine
-      }
-      if (comment.startLine !== comment.endLine) {
-        commentData.start_line = comment.startLine
-        commentData.start_side = 'RIGHT'
-      }
-      return commentData
-    })
-
-    let createdReviewId: number | null = null
-    try {
-      const review = await octokit.pulls.createReview({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber,
-        // eslint-disable-next-line camelcase
-        commit_id: commitId,
-        comments
-      })
-      createdReviewId = review.data.id
-      await octokit.pulls.submitReview({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber,
-        // eslint-disable-next-line camelcase
-        review_id: createdReviewId,
-        event: 'COMMENT',
-        body
-      })
-      return true
-    } catch (e) {
-      warning('Unable to confirm review publication: ' + e)
-      // Never blindly fall back to individual posts: timed-out requests may
-      // already have succeeded. Only clean up a pending review if its ID
-      // was returned explicitly by the createReview call.
-      if (createdReviewId !== null) {
-        try {
+    const result = await publishReviewBatch(
+      pending,
+      commitId,
+      body,
+      {
+        createReview: async request => {
+          const response = await octokit.pulls.createReview({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: pullNumber,
+            // eslint-disable-next-line camelcase
+            commit_id: request.commitId,
+            body: request.body,
+            event: request.event,
+            comments: request.comments
+          })
+          return response.data.id
+        },
+        submitReview: async (reviewId, message) => {
+          await octokit.pulls.submitReview({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: pullNumber,
+            // eslint-disable-next-line camelcase
+            review_id: reviewId,
+            event: 'COMMENT',
+            body: message
+          })
+        },
+        discardPendingReview: async reviewId => {
           await octokit.pulls.deletePendingReview({
             owner: repo.owner,
             repo: repo.repo,
             // eslint-disable-next-line camelcase
             pull_number: pullNumber,
             // eslint-disable-next-line camelcase
-            review_id: createdReviewId
+            review_id: reviewId
           })
-        } catch (cleanupError) {
-          warning('Pending review cleanup not confirmed: ' + cleanupError)
         }
       }
-      return false
+    )
+    if (!result.confirmed) {
+      warning('Unable to confirm GitHub review publication: ' + result.error)
     }
+    return result.confirmed
   }
 
   async reviewCommentReply(
