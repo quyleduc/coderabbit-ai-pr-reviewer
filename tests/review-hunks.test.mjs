@@ -2,16 +2,22 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {HunkCoverage, hunkIndexForRange, hunkUnitId} from '../src/review-hunks.ts'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
+import {assessReviewCompletion} from '../src/review-integrity.ts'
+
+const assess = (units, acknowledged) => {
+  const snapshot = units.snapshot()
+  return assessReviewCompletion(snapshot.expectedIds, snapshot.entries, acknowledged)
+}
 
 test('two hunks need two explicit acknowledgments, even within one file', () => {
   const units = new HunkCoverage()
   units.registerFile('main.c', 2)
   units.mark('main.c', 0, 'reviewed')
-  assert.equal(units.assess(true).complete, false)
-  assert.equal(units.assess(true).blockers.length, 1)
+  assert.equal(assess(units,true).complete, false)
+  assert.equal(assess(units,true).blockers.length, 1)
   units.mark('main.c', 1, 'reviewed')
-  assert.equal(units.assess(true).complete, true)
-  assert.equal(units.assess(false).complete, false)
+  assert.equal(assess(units,true).complete, true)
+  assert.equal(assess(units,false).complete, false)
 })
 
 test('every packed but unacknowledged hunk is a hard analysis failure', () => {
@@ -23,14 +29,14 @@ test('every packed but unacknowledged hunk is a hard analysis failure', () => {
   assert.equal(units.get('driver.c', 0), 'reviewed')
   assert.equal(units.get('driver.c', 1), 'failed_analysis')
   assert.equal(units.get('driver.c', 2), 'blocked_by_budget')
-  assert.equal(units.assess(true).complete, false)
+  assert.equal(assess(units,true).complete, false)
 })
 
 test('trivial/file exclusions have explicit per-hunk coverage', () => {
   const units = new HunkCoverage()
   units.registerFile('doc.c', 2)
   units.markFile('doc.c', 'triaged_trivial')
-  assert.equal(units.assess(true).complete, true)
+  assert.equal(assess(units,true).complete, true)
 })
 
 test('failed analysis cannot be overwritten by a late success', () => {
