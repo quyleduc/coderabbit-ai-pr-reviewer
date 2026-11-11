@@ -19,6 +19,8 @@ concurrency:
 
 jobs:
   review:
+    # Privileged automatic review requires an explicit repository opt-in.
+    if: vars.ENABLE_AUTOMATED_PR_REVIEWS == 'true'
     runs-on: ubuntu-latest
     steps:
       # Always execute this local action from trusted base-repository code.

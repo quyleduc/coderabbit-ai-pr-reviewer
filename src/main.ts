@@ -50,7 +50,7 @@ async function run(): Promise<void> {
     )
   } catch (e: any) {
     setFailed(
-      `Unable to create summary bot: verify openai_api_key and model configuration: ${e}`
+      'Unable to create summary bot: verify openai_api_key and model configuration'
     )
     return
   }
@@ -63,7 +63,7 @@ async function run(): Promise<void> {
     )
   } catch (e: any) {
     setFailed(
-      `Unable to create review bot: verify openai_api_key and model configuration: ${e}`
+      'Unable to create review bot: verify openai_api_key and model configuration'
     )
     return
   }
@@ -82,21 +82,18 @@ async function run(): Promise<void> {
     } else {
       warning('Skipped: this action only works on push events or pull_request')
     }
-  } catch (e: any) {
-    if (e instanceof Error) {
-      setFailed(`Failed to run: ${e.message}, backtrace: ${e.stack}`)
-    } else {
-      setFailed(`Failed to run: ${e}, backtrace: ${e.stack}`)
-    }
+  } catch {
+    // Provider errors can contain raw source and secrets. Never log them.
+    setFailed('Failed to run reviewer: protected error details withheld')
   }
 }
 
 process
-  .on('unhandledRejection', (reason, p) => {
-    warning(`Unhandled Rejection at Promise: ${reason}, promise is ${p}`)
+  .on('unhandledRejection', () => {
+    setFailed('Unhandled reviewer rejection (details withheld)')
   })
-  .on('uncaughtException', (e: any) => {
-    warning(`Uncaught Exception thrown: ${e}, backtrace: ${e.stack}`)
+  .on('uncaughtException', () => {
+    setFailed('Unhandled reviewer exception (details withheld)')
   })
 
 await run()

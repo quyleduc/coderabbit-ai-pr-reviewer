@@ -1,0 +1,145 @@
+name: Controlled live PR acceptance (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Preflight (read-only), model-only (paid, no writes), or publish (gated)'
+        type: choice
+        required: true
+        default: preflight
+        options: [preflight, model-only, publish]
+      pr_number:
+        description: 'Exact draft PR number on acceptance/*'
+        type: number
+        required: true
+      expected_head_sha:
+        description: 'Full 40-character acceptance PR head SHA'
+        type: string
+        required: true
+      expected_base_sha:
+        description: 'Full 40-character main base SHA'
+        type: string
+        required: true
+      expected_rule:
+        description: 'Known finding rule ID (e.g. NULL_DEREF)'
+        type: string
+        required: true
+      expected_line:
+        description: 'Known added/right-side line'
+        type: number
+        required: true
+      model:
+        description: 'Explicit OpenAI model'
+        type: string
+        required: true
+        default: gpt-6.1-sol
+      confirm:
+        description: 'PREFLIGHT_ACCEPTANCE_ONLY, VALIDATE_ACCEPTANCE_MODEL, or PUBLISH_ACCEPTANCE_REVIEW'
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-${{ github.repository }}-${{ inputs.pr_number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      ((inputs.mode == 'preflight' && inputs.confirm == 'PREFLIGHT_ACCEPTANCE_ONLY') ||
+       (inputs.mode == 'model-only' && inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL') ||
+       (inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Preflight exact isolated acceptance PR (read-only)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_PR: ${{ inputs.pr_number }}
+          ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
+          ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
+          ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
+          ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
+        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --preflight
+
+  model_only:
+    if: inputs.mode == 'model-only' && inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL'
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Model-only known C defect test (no GitHub writes)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model }}
+          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_PR: ${{ inputs.pr_number }}
+          ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
+          ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
+          ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
+          ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
+        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --model-only
+
+  publish:
+    if: inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'
+    needs: preflight
+    environment: controlled-review-acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Authorized single-review publication with checkpoint
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model }}
+          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_PR: ${{ inputs.pr_number }}
+          ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
+          ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
+          ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
+          ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
+          ACCEPTANCE_CONFIRM: ${{ inputs.confirm }}
+        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --publish

@@ -37,7 +37,8 @@ test('one pending finding produces correct GitHub RIGHT-side coordinates', async
     body: finding.message,
     start_line: 40,
     start_side: 'RIGHT',
-    line: 42
+    line: 42,
+    side: 'RIGHT'
   }])
   assert.deepEqual(calls[1], {kind: 'submit', id: 123, body: 'Review result'})
 })

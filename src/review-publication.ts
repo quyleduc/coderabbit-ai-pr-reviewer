@@ -14,6 +14,7 @@ export interface GitHubReviewComment {
   path: string
   body: string
   line: number
+  side: 'RIGHT'
   start_line?: number
   start_side?: 'RIGHT'
 }
@@ -56,7 +57,8 @@ export async function publishReviewBatch(
     const result: GitHubReviewComment = {
       path: comment.path,
       body: comment.message,
-      line: comment.endLine
+      line: comment.endLine,
+      side: 'RIGHT'
     }
     if (comment.startLine !== comment.endLine) {
       result.start_line = comment.startLine

@@ -346,8 +346,8 @@ ${
         return [filename, summarizeResp, true]
       }
     } catch (e: any) {
-      warning(`summarize: error from openai: ${e as string}`)
-      summariesFailed.push(`${filename} (error from openai: ${e as string})})`)
+      warning('Summarize failed (details withheld)')
+      summariesFailed.push(`${filename} (summarize failed)`)
       return null
     }
   }
@@ -423,7 +423,7 @@ ${filename}: ${summary}
           message
         )
       } catch (e: any) {
-        warning(`release notes: error from github: ${e.message as string}`)
+        warning('Release notes update failed (details withheld)')
       }
     }
   }
@@ -589,11 +589,7 @@ ${
             commentChain = allChains
           }
         } catch (e: any) {
-          warning(
-            `Failed to get comments: ${e as string}, skipping. backtrace: ${
-              e.stack as string
-            }`
-          )
+          warning('Failed to retrieve review comment chain (details withheld)')
         }
         // try packing comment_chain into this request
         const commentChainTokens = getTokenCount(commentChain)
@@ -665,12 +661,8 @@ ${commentChain}
             hunkCoverage.mark(filename, hunkIndex, 'reviewed')
           }
         } catch (e: any) {
-          warning(
-            `Failed to review: ${e as string}, skipping. backtrace: ${
-              e.stack as string
-            }`
-          )
-          reviewsFailed.push(`${filename} (${e as string})`)
+          warning('Failed to validate review response (details withheld)')
+          reviewsFailed.push(`${filename} (review failed)`)
           hunkCoverage.markFile(filename, 'failed_analysis')
         }
         hunkCoverage.markUnacknowledged(filename, patchesPacked)
@@ -779,7 +771,7 @@ ${
         current.data.head.sha === context.payload.pull_request.head.sha &&
         current.data.base.sha === context.payload.pull_request.base.sha
     } catch (e: any) {
-      warning(`Cannot verify current PR head: ${e as string}`)
+      warning('Cannot verify current PR head (details withheld)')
     }
     if (!scopeFresh) {
       setFailed('PR head/base changed or cannot be verified; refusing stale review publication')
