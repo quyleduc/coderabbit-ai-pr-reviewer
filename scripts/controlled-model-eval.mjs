@@ -234,7 +234,7 @@ async function main() {
     const effort = process.env.LLM_REASONING_EFFORT || 'auto'
     const budget = process.env.LLM_MAX_OUTPUT_TOKENS
     if (!['auto','none','low','medium','high'].includes(effort) ||
-        (budget !== undefined && !['3000','8192','12000'].includes(budget))) {
+        (budget !== undefined && !['auto','3000','8192','12000'].includes(budget))) {
       throw new Error('Invalid controlled reasoning or output budget setting')
     }
     if (live && !process.env.OPENAI_MODEL) {
@@ -247,7 +247,7 @@ async function main() {
         await requestModelResponse({
           prompt, apiKey: connection?.apiKey, model: process.env.OPENAI_MODEL, provider,
           reasoningEffort: effort === 'auto' ? undefined : effort,
-          maxOutputTokens: budget === undefined ? undefined : Number(budget)
+          maxOutputTokens: budget === undefined || budget === 'auto' ? undefined : Number(budget)
         })
       stage = 'review_validation'
       return reply
