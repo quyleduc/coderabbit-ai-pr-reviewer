@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {validateAcceptanceTarget, acceptanceScopeMarker, commitAcceptanceCheckpoint} from '../src/acceptance-gate.ts'
+import {validateAcceptanceTarget, acceptanceScopeMarker, commitAcceptanceCheckpoint} from '../scripts/acceptance-gate.mjs'
 
 const SHA_A='a'.repeat(40), SHA_B='b'.repeat(40)
 const PATCH='@@ -1,3 +1,3 @@\n int sensor(const int *ptr) {\n-  return 0;\n+  return *ptr;\n }\n'
