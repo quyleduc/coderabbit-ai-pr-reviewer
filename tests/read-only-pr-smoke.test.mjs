@@ -66,7 +66,7 @@ test('API read errors and truncated file lists are never accepted as successful 
     fetchHead: async () => 'a'.repeat(40),
     pageSize: 1,
     maxPages: 2,
-    fetchPage: async () => [{filename: 'src/x.c', patch: diff}]
+    fetchPage: async page => [{filename: 'src/x' + page + '.c', patch: diff}]
   }), /pagination|limit/i)
 })
 
