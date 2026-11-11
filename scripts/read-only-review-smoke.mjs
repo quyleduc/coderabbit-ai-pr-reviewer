@@ -11,8 +11,13 @@ import {publishReviewBatch} from '../src/review-publication.ts'
  *
  * This is a transport/coordinate smoke test, NOT a code-review accuracy test.
  */
+/**
+ * Evaluate every changed GitHub PR file, never silently sample one.
+ * Verdicts here are synthetic; this tests transport and coverage, not bugs.
+ */
 export async function smokeReadOnlyPullRequest({
   expectedHead,
+  expectedFileCount,
   fetchHead,
   fetchPage,
   pageSize = 100,
@@ -23,13 +28,18 @@ export async function smokeReadOnlyPullRequest({
       !Number.isSafeInteger(maxPages) || maxPages < 1) {
     throw new TypeError('Invalid PR smoke scope')
   }
+  if (expectedFileCount !== undefined &&
+      (!Number.isSafeInteger(expectedFileCount) ||
+       expectedFileCount < 1 || expectedFileCount > 3000)) {
+    throw new Error('Invalid or unsupported GitHub PR file count')
+  }
 
-  const initial = await fetchHead()
-  if (initial !== expectedHead) {
+  if (await fetchHead() !== expectedHead) {
     throw new Error('Stale PR: head changed before smoke acquisition')
   }
 
   const files = []
+  const filenames = new Set()
   let complete = false
   for (let page = 1; page <= maxPages; page++) {
     const batch = await fetchPage(page, pageSize)
@@ -40,6 +50,10 @@ export async function smokeReadOnlyPullRequest({
       if (typeof file?.filename !== 'string' || !file.filename) {
         throw new Error('GitHub PR files response missing filename')
       }
+      if (filenames.has(file.filename)) {
+        throw new Error('Duplicate GitHub PR filename: ' + file.filename)
+      }
+      filenames.add(file.filename)
       files.push(file)
     }
     if (batch.length < pageSize) {
@@ -48,80 +62,106 @@ export async function smokeReadOnlyPullRequest({
     }
   }
   if (!complete) throw new Error('GitHub PR files pagination exceeded safety limit')
+  if (files.length === 0 ||
+      (expectedFileCount !== undefined && files.length !== expectedFileCount)) {
+    throw new Error('GitHub PR changed file count mismatch or empty PR')
+  }
 
-  const available = files.filter(f => typeof f.patch === 'string' && f.patch.length > 0)
-  let selected
-  let index
-  for (const file of available) {
-    const next = buildChangedLineIndex(file.patch)
-    if (next.valid && next.hunks.length <= 20) {
-      selected = file
-      index = next
-      break
+  // Build and verify EVERY file's complete local diff before invoking even
+  // the fake publisher. Missing binary/oversized patches are hard blockers.
+  let totalHunks = 0
+  const candidateComments = []
+  const coveredFiles = []
+  for (const file of files) {
+    if (typeof file.patch !== 'string' || file.patch.length === 0) {
+      throw new Error('Missing or unavailable GitHub patch: ' + file.filename)
     }
-  }
-  if (!selected || !index) {
-    throw new Error('No usable text diff patch in PR; inconclusive smoke')
-  }
+    const index = buildChangedLineIndex(file.patch)
+    if (!index.valid) {
+      throw new Error('Invalid or malformed diff patch: ' + file.filename +
+        ' (' + index.reason + ')')
+    }
+    if (index.hunks.length > 20) {
+      throw new Error('Too many hunks in file, exceeds smoke safety limit: ' + file.filename)
+    }
 
-  // Identify one truly added line to make a SYNTHETIC test finding.
-  // No assertion is made that the real source has a defect.
-  const lines = selected.patch.split(/\r?\n/)
-  let cursor = 0
-  let evidence
-  let addedLine
-  let selectedHunk
-  for (const raw of lines) {
-    const match = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
-    if (match) {
-      cursor = Number(match[1])
-    } else if (raw.startsWith('+')) {
-      const text = raw.slice(1).trim()
-      const hunk = index.hunks.findIndex(h => h.addedLines.includes(cursor))
-      if (text && hunk !== -1 && evidence === undefined) {
-        evidence = text
-        addedLine = cursor
-        selectedHunk = hunk
+    const source = file.patch.split(/\r?\n/)
+    const addedCount = source.filter(line => line.startsWith('+')).length
+    const deletedCount = source.filter(line => line.startsWith('-')).length
+    // The REST file metadata is our independent check against a diff whose
+    // individual hunks look valid but one or more complete hunks are missing.
+    if ((Number.isSafeInteger(file.additions) && file.additions !== addedCount) ||
+        (Number.isSafeInteger(file.deletions) && file.deletions !== deletedCount)) {
+      throw new Error('Truncated patch line count mismatch: ' + file.filename)
+    }
+    // In live Actions, both counts must be present for every file.
+    if (expectedFileCount !== undefined &&
+        (!Number.isSafeInteger(file.additions) ||
+         !Number.isSafeInteger(file.deletions))) {
+      throw new Error('GitHub file metadata missing additions/deletions: ' + file.filename)
+    }
+
+    let cursor = 0
+    let evidence
+    let addedLine
+    let selectedHunk
+    for (const raw of source) {
+      const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(raw)
+      if (header) {
+        cursor = Number(header[1])
+      } else if (raw.startsWith('+')) {
+        const candidate = raw.slice(1).trim()
+        const hunk = index.hunks.findIndex(h => h.addedLines.includes(cursor))
+        if (candidate && hunk !== -1 && evidence === undefined) {
+          evidence = candidate
+          addedLine = cursor
+          selectedHunk = hunk
+        }
+        cursor++
+      } else if (raw.startsWith(' ')) {
+        cursor++
       }
-      cursor++
-    } else if (raw.startsWith(' ')) {
-      cursor++
+    }
+
+    // One synthetic test-only finding per file with an added code line.
+    // Deletion-only diffs receive explicit clean verdicts for all hunks.
+    const modeled = index.hunks.map((_, h) => {
+      if (selectedHunk === h && addedLine !== undefined) {
+        return {
+          id: 'h' + h,
+          status: 'issues',
+          findings: [{
+            line: addedLine,
+            rule_id: 'SMOKE_ONLY',
+            severity: 'low',
+            message: 'Synthetic transport-only marker, not a real code defect.',
+            evidence
+          }]
+        }
+      }
+      return {id: 'h' + h, status: 'clean', findings: []}
+    })
+
+    const verified = processStructuredReview(
+      JSON.stringify({version: 1, hunks: modeled}),
+      index,
+      file.patch,
+      index.hunks.length
+    )
+    totalHunks += verified.reviewedHunks.length
+    coveredFiles.push(file.filename)
+    for (const comment of verified.comments) {
+      candidateComments.push({path: file.filename, ...comment})
     }
   }
 
-  const modeled = index.hunks.map((_, h) => {
-    if (selectedHunk === h && addedLine !== undefined) {
-      return {
-        id: 'h' + h,
-        status: 'issues',
-        findings: [{
-          line: addedLine,
-          rule_id: 'SMOKE_ONLY',
-          severity: 'low',
-          message: 'Synthetic transport-only marker, not a real code defect.',
-          evidence
-        }]
-      }
-    }
-    return {id: 'h' + h, status: 'clean', findings: []}
-  })
-
-  // Freshness check after acquisition (still no real mutation).
   if (await fetchHead() !== expectedHead) {
     throw new Error('Stale PR: head changed during smoke acquisition')
   }
-  const verified = processStructuredReview(
-    JSON.stringify({version: 1, hunks: modeled}),
-    index,
-    selected.patch,
-    index.hunks.length
-  )
-  const candidates = verified.comments.map(c => ({
-    path: selected.filename, ...c
-  }))
-  const planned = planReviewPublication(candidates, [])
+
+  const planned = planReviewPublication(candidateComments, [])
   const calls = []
-  const fakeTransport = {
+  const transport = {
     async createReview(request) {
       calls.push({kind: 'create', request})
       return 1
@@ -137,19 +177,19 @@ export async function smokeReadOnlyPullRequest({
     planned.pending,
     expectedHead,
     'Synthetic read-only validation. No real GitHub comments were posted.',
-    fakeTransport
+    transport
   )
   if (!outcome.confirmed) {
     throw new Error('Fake GitHub publication was not confirmed')
   }
   const replay = planReviewPublication(
-    candidates,
-    planned.pending.map(c => c.message)
+    candidateComments,
+    planned.pending.map(comment => comment.message)
   )
   if (replay.pending.length !== 0) {
     throw new Error('Fake publication replay was not idempotent')
   }
-  if (calls.some(c => c.kind !== 'create' && c.kind !== 'submit')) {
+  if (calls.some(call => call.kind !== 'create' && call.kind !== 'submit')) {
     throw new Error('Unexpected fake transport call')
   }
 
@@ -157,11 +197,11 @@ export async function smokeReadOnlyPullRequest({
     status: 'PASS',
     headSha: expectedHead,
     retrievedFiles: files.length,
-    reviewedFiles: 1,
-    reviewedFile: selected.filename,
-    reviewedHunks: verified.reviewedHunks.length,
-    syntheticFindings: verified.comments.length,
-    skippedNoPatch: files.length - available.length,
+    reviewedFiles: coveredFiles.length,
+    coveredFiles,
+    reviewedHunks: totalHunks,
+    syntheticFindings: candidateComments.length,
+    skippedNoPatch: 0,
     fakeReviewConfirmed: outcome.confirmed,
     fakeTransportOperations: calls.length,
     replayedCandidates: replay.pending.length,
@@ -198,8 +238,10 @@ async function main() {
     if (!response.ok) throw new Error('GitHub read-only HTTP ' + response.status)
     return response.json()
   }
+  const currentPR = await readApi(url)
   const result = await smokeReadOnlyPullRequest({
     expectedHead,
+    expectedFileCount: currentPR.changed_files,
     fetchHead: async () => (await readApi(url)).head.sha,
     fetchPage: async (page, pageSize) =>
       readApi(url + '/files?per_page=' + pageSize + '&page=' + page)
@@ -211,7 +253,7 @@ async function main() {
       '## Real PR diff, synthetic model, fake GitHub review\n' +
       '\n**Result:** ' + result.status +
       '\n\n**Files fetched:** ' + result.retrievedFiles +
-      '\n\n**Selected file:** ' + result.reviewedFile +
+      '\n\n**Files audited:** ' + result.reviewedFiles +
       '\n\n**Hunks checked:** ' + result.reviewedHunks +
       '\n\n**Synthetic findings:** ' + result.syntheticFindings +
       '\n\n**Actual GitHub writes:** 0\n' +
