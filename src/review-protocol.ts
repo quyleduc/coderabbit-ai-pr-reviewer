@@ -8,6 +8,7 @@ export interface StructuredReviewComment {
 
 export interface StructuredReviewResult {
   reviewedHunks: number[]
+  cleanHunks: number[]
   comments: StructuredReviewComment[]
 }
 
@@ -92,6 +93,7 @@ export function processStructuredReview(
     throw new Error('Diff hunk count mismatch')
   }
   const seen = new Set<number>()
+  const cleanHunks: number[] = []
   const comments: StructuredReviewComment[] = []
   for (const rawHunk of root.hunks) {
     requireFields(rawHunk, ['id', 'status', 'findings'], 'hunk')
@@ -114,6 +116,7 @@ export function processStructuredReview(
         (rawHunk.status === 'issues' && rawHunk.findings.length === 0)) {
       throw new Error('Hunk status and findings disagree')
     }
+    if (rawHunk.status === 'clean') cleanHunks.push(hunkIndex)
     for (const finding of rawHunk.findings) {
       requireFields(finding, ['line', 'rule_id', 'severity', 'message', 'evidence'], 'finding')
       if (!Number.isSafeInteger(finding.line) || (finding.line as number) < 1) {
@@ -150,5 +153,9 @@ export function processStructuredReview(
       })
     }
   }
-  return {reviewedHunks: [...seen].sort((a, b) => a - b), comments}
+  return {
+    reviewedHunks: [...seen].sort((a, b) => a - b),
+    cleanHunks: cleanHunks.sort((a, b) => a - b),
+    comments
+  }
 }
