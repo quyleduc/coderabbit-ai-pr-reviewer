@@ -10,6 +10,8 @@ export interface ResponsesRequest {
   apiBaseUrl?: string
   apiOrg?: string
   maxOutputTokens?: number
+  /** Validated OpenRouter/OpenAI Responses reasoning effort; absent preserves legacy behavior. */
+  reasoningEffort?: string
   timeoutMs?: number
   retries?: number
   /** Only explicitly opted-in callers retry a completed but empty response. */
@@ -42,9 +44,32 @@ function responsesEndpoint(baseUrl: string): string {
   return url.origin + url.pathname.replace(/\/+$/, '') + '/responses'
 }
 
+type UsageError = Error & {outputTokens?: number; reasoningTokens?: number}
+
+/** Include numeric usage only. Never attach provider body, reasoning or prompt. */
+function responseError(message: string, root: Record<string, unknown>): UsageError {
+  const error: UsageError = new Error(message)
+  const usage = fields(root.usage)
+  const detail = fields(usage?.output_tokens_details)
+  const output = usage?.output_tokens
+  const reasoning = detail?.reasoning_tokens
+  if (typeof output === 'number' && Number.isSafeInteger(output) && output >= 0 && output <= 16000) {
+    error.outputTokens = output
+  }
+  if (typeof reasoning === 'number' && Number.isSafeInteger(reasoning) &&
+      reasoning >= 0 && reasoning <= 16000) {
+    error.reasoningTokens = reasoning
+  }
+  return error
+}
+
 function readOutput(body: unknown): string {
   const root = fields(body)
   if (root?.status !== 'completed' || !Array.isArray(root.output)) {
+    if (root?.status === 'incomplete' &&
+        fields(root.incomplete_details)?.reason === 'max_output_tokens') {
+      throw responseError('OpenAI response exceeded output token budget', root)
+    }
     throw new Error('OpenAI response incomplete or unconfirmed')
   }
   const text: string[] = []
@@ -73,7 +98,7 @@ function readOutput(body: unknown): string {
 
   // Never interpret model reasoning, tool calls or no output as a clean review.
   if (hasReasoning) {
-    throw new Error('OpenAI response contains reasoning but no final output text')
+    throw responseError('OpenAI response contains reasoning but no final output text', root)
   }
   if (root.output.length === 0) {
     throw new Error('OpenAI response contains no output items')
@@ -96,6 +121,7 @@ export async function requestResponsesText({
   apiBaseUrl = 'https://api.openai.com/v1',
   apiOrg,
   maxOutputTokens = 2048,
+  reasoningEffort,
   timeoutMs = 120000,
   retries = 2,
   retryEmptyOutput = false,
@@ -121,6 +147,10 @@ export async function requestResponsesText({
   if (typeof retryEmptyOutput !== 'boolean') {
     throw new Error('Invalid empty-output retry setting')
   }
+  if (reasoningEffort !== undefined &&
+      !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(reasoningEffort)) {
+    throw new Error('Invalid reasoning effort')
+  }
   const endpoint = responsesEndpoint(apiBaseUrl)
   const headers: Record<string, string> = {
     authorization: 'Bearer ' + apiKey,
@@ -132,6 +162,7 @@ export async function requestResponsesText({
     instructions: systemMessage,
     input: [{role: 'user', content: prompt}],
     max_output_tokens: maxOutputTokens,
+    ...(reasoningEffort === undefined ? {} : {reasoning: {effort: reasoningEffort}}),
     store: false
   })
 

@@ -17,6 +17,18 @@ on:
         description: 'Provider-specific Responses API model ID (explicitly selected)'
         required: true
         type: string
+      reasoning_effort:
+        description: 'auto = low for OpenRouter, provider default for OpenAI; otherwise explicit effort'
+        required: true
+        type: choice
+        default: auto
+        options: [auto, none, low, medium, high]
+      max_output_tokens:
+        description: 'Output budget including reasoning tokens; auto = 8192 OpenRouter / 3000 OpenAI'
+        required: true
+        type: choice
+        default: auto
+        options: [auto, '3000', '8192', '12000']
 
 permissions:
   contents: read
@@ -46,4 +58,6 @@ jobs:
           OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
           OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
           OPENAI_MODEL: ${{ inputs.model }}
+          LLM_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
+          LLM_MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
         run: node --experimental-strip-types scripts/controlled-model-eval.mjs --live
