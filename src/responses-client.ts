@@ -12,6 +12,8 @@ export interface ResponsesRequest {
   maxOutputTokens?: number
   timeoutMs?: number
   retries?: number
+  /** Only explicitly opted-in callers retry a completed but empty response. */
+  retryEmptyOutput?: boolean
   fetcher?: (url: string, init: RequestInit) => Promise<{
     ok: boolean
     status: number
@@ -46,9 +48,13 @@ function readOutput(body: unknown): string {
     throw new Error('OpenAI response incomplete or unconfirmed')
   }
   const text: string[] = []
+  let hasMessage = false
+  let hasReasoning = false
   for (const output of root.output) {
     const item = fields(output)
+    if (item?.type === 'reasoning') hasReasoning = true
     if (item?.type !== 'message' || !Array.isArray(item.content)) continue
+    hasMessage = true
     for (const rawPart of item.content) {
       const part = fields(rawPart)
       if (part?.type === 'output_text' && typeof part.text === 'string') {
@@ -56,10 +62,26 @@ function readOutput(body: unknown): string {
       }
     }
   }
-  const result = text.join('')
-  if (!result.trim()) throw new Error('OpenAI response missing or empty')
+
+  // OpenRouter documents response-level output_text in addition to output[].
+  // It is used only if no message output_text exists and status is completed.
+  const primary = text.join('')
+  const result = primary.trim() ? primary :
+    (typeof root.output_text === 'string' ? root.output_text : primary)
   if (result.length > 262144) throw new Error('OpenAI response exceeds size limit')
-  return result
+  if (result.trim()) return result
+
+  // Never interpret model reasoning, tool calls or no output as a clean review.
+  if (hasReasoning) {
+    throw new Error('OpenAI response contains reasoning but no final output text')
+  }
+  if (root.output.length === 0) {
+    throw new Error('OpenAI response contains no output items')
+  }
+  if (!hasMessage) {
+    throw new Error('OpenAI response contains no assistant message')
+  }
+  throw new Error('OpenAI response missing or empty')
 }
 
 const pause = (ms: number): Promise<void> =>
@@ -76,6 +98,7 @@ export async function requestResponsesText({
   maxOutputTokens = 2048,
   timeoutMs = 120000,
   retries = 2,
+  retryEmptyOutput = false,
   fetcher = fetch,
   delay = pause
 }: ResponsesRequest): Promise<string> {
@@ -94,6 +117,9 @@ export async function requestResponsesText({
       maxOutputTokens > 16000 ||
       !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600000) {
     throw new Error('Invalid retry, timeout or output limit')
+  }
+  if (typeof retryEmptyOutput !== 'boolean') {
+    throw new Error('Invalid empty-output retry setting')
   }
   const endpoint = responsesEndpoint(apiBaseUrl)
   const headers: Record<string, string> = {
@@ -143,7 +169,18 @@ export async function requestResponsesText({
     } catch {
       throw new Error('Invalid OpenAI response JSON')
     }
-    return readOutput(decoded)
+    try {
+      return readOutput(decoded)
+    } catch (error) {
+      const empty = error instanceof Error &&
+        (error.message === 'OpenAI response contains no output items' ||
+         error.message === 'OpenAI response missing or empty')
+      if (retryEmptyOutput && empty && attempt < retries) {
+        await delay(Math.min(1000 * 2 ** attempt, 10000))
+        continue
+      }
+      throw error
+    }
   }
   throw new Error('OpenAI request failed after configured retries')
 }

@@ -91,7 +91,7 @@ test('Responses adapter fails closed on HTTP and incomplete outputs without leak
   const options={prompt:'hello',apiKey:'private-token',model:'test-model'}
   await assert.rejects(requestModelResponse({...options,fetcher: async()=>({ok:false,status:429})}), /HTTP 429/)
   await assert.rejects(requestModelResponse({...options,fetcher: async()=>({ok:true,status:200,json:async()=>({status:'incomplete',output:[]})})}), /incomplete|completed/i)
-  await assert.rejects(requestModelResponse({...options,fetcher: async()=>({ok:true,status:200,json:async()=>({status:'completed',output:[]})})}), /empty|missing/i)
+  await assert.rejects(requestModelResponse({...options,fetcher: async()=>({ok:true,status:200,json:async()=>({status:'completed',output:[]})})}), /empty|missing|no output items/i)
 })
 
 test('no API secret means zero outgoing HTTP requests', async () => {
