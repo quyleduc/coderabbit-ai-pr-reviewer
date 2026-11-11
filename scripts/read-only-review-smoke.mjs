@@ -1,6 +1,7 @@
 import {readFileSync, appendFileSync} from 'node:fs'
 import {pathToFileURL} from 'node:url'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
+import {loadCompletePullRequestFiles, verifyPullRequestPatch} from '../src/pr-files.ts'
 import {processStructuredReview} from '../src/review-protocol.ts'
 import {planReviewPublication} from '../src/review-dedup.ts'
 import {publishReviewBatch} from '../src/review-publication.ts'
@@ -23,49 +24,18 @@ export async function smokeReadOnlyPullRequest({
   pageSize = 100,
   maxPages = 30
 }) {
-  if (!/^[0-9a-f]{40}$/i.test(expectedHead) ||
-      !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100 ||
-      !Number.isSafeInteger(maxPages) || maxPages < 1) {
-    throw new TypeError('Invalid PR smoke scope')
+  if (!/^[0-9a-f]{40}$/i.test(expectedHead)) {
+    throw new TypeError('Invalid immutable PR head SHA')
   }
-  if (expectedFileCount !== undefined &&
-      (!Number.isSafeInteger(expectedFileCount) ||
-       expectedFileCount < 1 || expectedFileCount > 3000)) {
-    throw new Error('Invalid or unsupported GitHub PR file count')
-  }
-
   if (await fetchHead() !== expectedHead) {
     throw new Error('Stale PR: head changed before smoke acquisition')
   }
 
-  const files = []
-  const filenames = new Set()
-  let complete = false
-  for (let page = 1; page <= maxPages; page++) {
-    const batch = await fetchPage(page, pageSize)
-    if (!Array.isArray(batch) || batch.length > pageSize) {
-      throw new Error('Invalid GitHub PR files page')
-    }
-    for (const file of batch) {
-      if (typeof file?.filename !== 'string' || !file.filename) {
-        throw new Error('GitHub PR files response missing filename')
-      }
-      if (filenames.has(file.filename)) {
-        throw new Error('Duplicate GitHub PR filename: ' + file.filename)
-      }
-      filenames.add(file.filename)
-      files.push(file)
-    }
-    if (batch.length < pageSize) {
-      complete = true
-      break
-    }
-  }
-  if (!complete) throw new Error('GitHub PR files pagination exceeded safety limit')
-  if (files.length === 0 ||
-      (expectedFileCount !== undefined && files.length !== expectedFileCount)) {
-    throw new Error('GitHub PR changed file count mismatch or empty PR')
-  }
+  // Exercise the SAME paginated API acquisition module as production, using
+  // a read-only public REST client and synthetic model/publisher.
+  const files = await loadCompletePullRequestFiles(
+    expectedFileCount, fetchPage, {pageSize, maxPages}
+  )
 
   // Build and verify EVERY file's complete local diff before invoking even
   // the fake publisher. Missing binary/oversized patches are hard blockers.
@@ -73,9 +43,7 @@ export async function smokeReadOnlyPullRequest({
   const candidateComments = []
   const coveredFiles = []
   for (const file of files) {
-    if (typeof file.patch !== 'string' || file.patch.length === 0) {
-      throw new Error('Missing or unavailable GitHub patch: ' + file.filename)
-    }
+    verifyPullRequestPatch(file)
     const index = buildChangedLineIndex(file.patch)
     if (!index.valid) {
       throw new Error('Invalid or malformed diff patch: ' + file.filename +
@@ -86,20 +54,6 @@ export async function smokeReadOnlyPullRequest({
     }
 
     const source = file.patch.split(/\r?\n/)
-    const addedCount = source.filter(line => line.startsWith('+')).length
-    const deletedCount = source.filter(line => line.startsWith('-')).length
-    // The REST file metadata is our independent check against a diff whose
-    // individual hunks look valid but one or more complete hunks are missing.
-    if ((Number.isSafeInteger(file.additions) && file.additions !== addedCount) ||
-        (Number.isSafeInteger(file.deletions) && file.deletions !== deletedCount)) {
-      throw new Error('Truncated patch line count mismatch: ' + file.filename)
-    }
-    // In live Actions, both counts must be present for every file.
-    if (expectedFileCount !== undefined &&
-        (!Number.isSafeInteger(file.additions) ||
-         !Number.isSafeInteger(file.deletions))) {
-      throw new Error('GitHub file metadata missing additions/deletions: ' + file.filename)
-    }
 
     let cursor = 0
     let evidence
