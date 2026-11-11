@@ -38,7 +38,6 @@ export const codeReview = async (
   const commenter: Commenter = new Commenter()
 
   const openaiConcurrencyLimit = pLimit(options.openaiConcurrencyLimit)
-  const githubConcurrencyLimit = pLimit(options.githubConcurrencyLimit)
 
   if (
     context.eventName !== 'pull_request' &&
@@ -197,44 +196,8 @@ export const codeReview = async (
 
   // find hunks to review
   const filteredFiles: Array<
-    [string, string, string, Array<[number, number, string]>] | null
-  > = await Promise.all(
-    filterSelectedFiles.map(file =>
-      githubConcurrencyLimit(async () => {
-        // retrieve file contents
-        let fileContent = ''
-        if (context.payload.pull_request == null) {
-          warning('Skipped: context.payload.pull_request is null')
-          return null
-        }
-        try {
-          const contents = await octokit.repos.getContent({
-            owner: repo.owner,
-            repo: repo.repo,
-            path: file.filename,
-            ref: context.payload.pull_request.base.sha
-          })
-          if (contents.data != null) {
-            if (!Array.isArray(contents.data)) {
-              if (
-                contents.data.type === 'file' &&
-                contents.data.content != null
-              ) {
-                fileContent = Buffer.from(
-                  contents.data.content,
-                  'base64'
-                ).toString()
-              }
-            }
-          }
-        } catch (e: any) {
-          warning(
-            `Failed to get file contents: ${
-              e as string
-            }. This is OK if it's a new file.`
-          )
-        }
-
+    [string, string, Array<[number, number, string]>] | null
+  > = filterSelectedFiles.map(file => {
         let fileDiff = ''
         if (file.patch != null) {
           fileDiff = file.patch
@@ -268,8 +231,7 @@ ${hunks.oldHunk}
           ])
         }
         if (patches.length > 0) {
-          return [file.filename, fileContent, fileDiff, patches] as [
-            string,
+          return [file.filename, fileDiff, patches] as [
             string,
             string,
             Array<[number, number, string]>
@@ -277,13 +239,11 @@ ${hunks.oldHunk}
         } else {
           return null
         }
-      })
-    )
-  )
+  })
 
   // Filter out any null results
   const filesAndChanges = filteredFiles.filter(file => file !== null) as Array<
-    [string, string, string, Array<[number, number, string]>]
+    [string, string, Array<[number, number, string]>]
   >
 
   if (filesAndChanges.length === 0) {
@@ -292,7 +252,7 @@ ${hunks.oldHunk}
   }
 
   const hunkCoverage = new HunkCoverage()
-  for (const [filename, , , patches] of filesAndChanges) {
+  for (const [filename, , patches] of filesAndChanges) {
     hunkCoverage.registerFile(filename, patches.length)
   }
 
@@ -309,7 +269,7 @@ ${
 <summary>Files selected (${filesAndChanges.length})</summary>
 
 * ${filesAndChanges
-        .map(([filename, , , patches]) => `${filename} (${patches.length})`)
+        .map(([filename, , patches]) => `${filename} (${patches.length})`)
         .join('\n* ')}
 </details>
 `
@@ -342,7 +302,7 @@ ${
 
   const doSummary = async (
     filename: string,
-    fileContent: string,
+
     fileDiff: string
   ): Promise<[string, string, boolean] | null> => {
     info(`summarize: ${filename}`)
@@ -406,11 +366,11 @@ ${
 
   const summaryPromises = []
   const skippedFiles = []
-  for (const [filename, fileContent, fileDiff] of filesAndChanges) {
+  for (const [filename, fileDiff] of filesAndChanges) {
     if (options.maxFiles <= 0 || summaryPromises.length < options.maxFiles) {
       summaryPromises.push(
         openaiConcurrencyLimit(
-          async () => await doSummary(filename, fileContent, fileDiff)
+          async () => await doSummary(filename, fileDiff)
         )
       )
     } else {
@@ -572,7 +532,7 @@ ${
     let reviewCount = 0
     const doReview = async (
       filename: string,
-      fileContent: string,
+
       fileDiff: string,
       patches: Array<[number, number, string]>
     ): Promise<void> => {
@@ -730,11 +690,11 @@ ${commentChain}
     }
 
     const reviewPromises = []
-    for (const [filename, fileContent, fileDiff, patches] of filesAndChangesReview) {
+    for (const [filename, fileDiff, patches] of filesAndChangesReview) {
       if (options.maxFiles <= 0 || reviewPromises.length < options.maxFiles) {
         reviewPromises.push(
           openaiConcurrencyLimit(async () => {
-            await doReview(filename, fileContent, fileDiff, patches)
+            await doReview(filename, fileDiff, patches)
           })
         )
       } else {
