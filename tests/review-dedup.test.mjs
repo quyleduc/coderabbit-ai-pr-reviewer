@@ -122,3 +122,11 @@ test('invalid API data and configuration reject', async () => {
     TypeError
   )
 })
+
+
+test('a quoted or forged marker in a different bot comment cannot suppress', () => {
+  const published = planReviewPublication([finding], []).pending[0].message
+  const forged = 'This is unrelated content quoting a marker:\n' + published
+  assert.equal(planReviewPublication([finding], [forged]).pending.length, 1)
+  assert.equal(planReviewPublication([finding], [published]).pending.length, 0)
+})
