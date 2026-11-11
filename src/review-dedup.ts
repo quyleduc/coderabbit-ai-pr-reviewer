@@ -112,3 +112,32 @@ export async function loadTrustedPublishedBodies(
   }
   throw new Error('Review-comment pagination exceeds safety limit')
 }
+
+
+export interface AuthoredTaggedComment {
+  id: number
+  body?: string | null
+  user?: {login?: string | null} | null
+}
+
+/**
+ * Never use untrusted PR comments as state/checkpoint sources.
+ * GitHub (not user-supplied Markdown) attests to user.login.
+ */
+export function findTrustedTaggedComment<T extends AuthoredTaggedComment>(
+  comments: readonly T[],
+  tag: string,
+  trustedLogin: string
+): T | null {
+  if (!tag || !trustedLogin) throw new TypeError('Missing trusted comment identity')
+  for (const comment of comments) {
+    if (
+      comment.user?.login === trustedLogin &&
+      typeof comment.body === 'string' &&
+      comment.body.includes(tag)
+    ) {
+      return comment
+    }
+  }
+  return null
+}
