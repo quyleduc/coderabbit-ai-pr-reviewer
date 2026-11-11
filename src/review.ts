@@ -19,6 +19,7 @@ import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
+import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -279,6 +280,11 @@ ${hunks.oldHunk}
   if (filesAndChanges.length === 0) {
     error('Skipped: no files to review')
     return
+  }
+
+  const hunkCoverage = new HunkCoverage()
+  for (const [filename, , , patches] of filesAndChanges) {
+    hunkCoverage.registerFile(filename, patches.length)
   }
 
   let statusMsg = `<details>
@@ -545,6 +551,7 @@ ${
     for (const filename of reviewsSkipped) {
       if (fileCoverage.get(filename) === 'pending') {
         fileCoverage.set(filename, 'triaged_trivial')
+        hunkCoverage.markFile(filename, 'triaged_trivial')
       }
     }
 
@@ -565,8 +572,9 @@ ${
       const ins: Inputs = inputs.clone()
       ins.filename = filename
       const changedLineIndex = buildChangedLineIndex(fileDiff)
-      if (!changedLineIndex.valid) {
-        reviewsFailed.push(`${filename} (invalid diff: ${changedLineIndex.reason})`)
+      if (!changedLineIndex.valid || changedLineIndex.hunks.length !== patches.length) {
+        reviewsFailed.push(`${filename} (invalid or incomplete diff)`)
+        hunkCoverage.markFile(filename, 'failed_analysis')
         return
       }
 
@@ -587,6 +595,7 @@ ${
       }
 
       if (patchesToPack < patches.length) budgetSkipped.add(filename)
+      hunkCoverage.markPacked(filename, patchesToPack)
 
       let patchesPacked = 0
       for (const [startLine, endLine, patch] of patches) {
@@ -665,21 +674,31 @@ ${commentChain}
           if (response === '') {
             info('review: nothing obtained from openai')
             reviewsFailed.push(`${filename} (no response)`)
+            hunkCoverage.markFile(filename, 'failed_analysis')
             return
           }
           // parse review
           const reviews = parseReview(response, patches, options.debug)
           if (reviews.length === 0) {
             reviewsFailed.push(`${filename} (unparseable model response)`)
+            hunkCoverage.markFile(filename, 'failed_analysis')
             return
           }
           for (const review of reviews) {
+            const targetHunk = hunkIndexForRange(
+              changedLineIndex, review.startLine, review.endLine
+            )
+            if (targetHunk === null || targetHunk >= patchesToPack) {
+              reviewsFailed.push(`${filename} (model feedback outside reviewed hunks)`)
+              continue
+            }
             // Treat only stand-alone approval as LGTM, not substantive
             // bug reports that happen to mention the term "LGTM".
             if (
               !options.reviewCommentLGTM &&
               /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
             ) {
+              hunkCoverage.mark(filename, targetHunk, 'reviewed')
               lgtmCount += 1
               continue
             }
@@ -689,6 +708,7 @@ ${commentChain}
               review.endLine
             )
             if (!anchor.valid) {
+              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
               reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
               continue
             }
@@ -709,8 +729,10 @@ ${review.comment}`
                 anchor.endLine,
                 message
               )
+              hunkCoverage.mark(filename, targetHunk, 'reviewed')
               reviewCount += 1
             } catch (e: any) {
+              hunkCoverage.mark(filename, targetHunk, 'failed_analysis')
               reviewsFailed.push(`${filename} comment failed (${e as string})`)
             }
           }
@@ -721,7 +743,9 @@ ${review.comment}`
             }`
           )
           reviewsFailed.push(`${filename} (${e as string})`)
+          hunkCoverage.markFile(filename, 'failed_analysis')
         }
+        hunkCoverage.markUnacknowledged(filename, patchesPacked)
       } else {
         reviewsSkipped.push(`${filename} (diff too large)`)
       }
@@ -756,6 +780,7 @@ ${review.comment}`
     for (const filename of skippedFiles) {
       if (fileCoverage.get(filename) === 'pending') {
         fileCoverage.set(filename, 'blocked_by_budget')
+        hunkCoverage.markFile(filename, 'blocked_by_budget')
       }
     }
 
@@ -812,19 +837,47 @@ ${
 `
     // Publishing is part of the transaction: a model response alone does
     // not constitute a completed review. Never checkpoint partial coverage.
+    // Recheck immutable PR scope immediately before any inline publishing.
+    // If the PR changed while the LLM was running, its comments are stale.
+    let scopeFresh = false
+    try {
+      const current = await octokit.pulls.get({
+        owner: repo.owner,
+        repo: repo.repo,
+        // eslint-disable-next-line camelcase
+        pull_number: context.payload.pull_request.number
+      })
+      scopeFresh =
+        current.data.head.sha === context.payload.pull_request.head.sha &&
+        current.data.base.sha === context.payload.pull_request.base.sha
+    } catch (e: any) {
+      warning(`Cannot verify current PR head: ${e as string}`)
+    }
+    if (!scopeFresh) {
+      warning('PR head/base changed or cannot be verified; refusing stale review publication')
+      return
+    }
+
     const published = await commenter.submitReview(
       context.payload.pull_request.number,
       context.payload.pull_request.head.sha,
       statusMsg
     )
-    const completion = assessReviewCompletion(
+    const publishConfirmed =
+      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+    const fileCompletion = assessReviewCompletion(
       files.map(file => file.filename),
       files.map(file => ({
         id: file.filename,
         status: fileCoverage.get(file.filename) ?? 'pending'
       })),
-      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+      publishConfirmed
     )
+    const hunkCompletion = hunkCoverage.assess(publishConfirmed)
+    const completion = {
+      complete: fileCompletion.complete && hunkCompletion.complete,
+      blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
+    }
 
     if (completion.complete) {
       summarizeComment += `\n${commenter.addReviewedCommitId(
