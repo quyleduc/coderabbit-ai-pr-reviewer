@@ -617,9 +617,7 @@ ${
           info(
             `unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`
           )
-          if (options.debug) {
-            info(`prompt so far: ${prompts.renderReviewFileDiff(ins)}`)
-          }
+          if (options.debug) info('Review prompt exceeds token budget')
           break
         }
         patchesPacked += 1
