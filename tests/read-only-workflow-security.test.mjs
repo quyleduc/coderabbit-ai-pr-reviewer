@@ -31,3 +31,16 @@ test('GitHub remote access in smoke CLI is limited to authenticated GET fetch', 
   assert.doesNotMatch(script, /octokit\.pulls\.(?:createReview|submitReview|update)/)
   assert.match(script, /realGitHubMutations:\s*0/)
 })
+
+
+test('untrusted PR-head smoke code never receives a GitHub token', () => {
+  assert.doesNotMatch(workflow, /GITHUB_TOKEN|github\.token|secrets\./)
+  assert.doesNotMatch(script, /process\.env\.GITHUB_TOKEN/)
+  assert.doesNotMatch(script, /authorization:\s*['"]Bearer /)
+})
+
+test('public metadata smoke uses only unauthenticated GitHub REST GET', () => {
+  assert.match(script, /https:\/\/api\.github\.com\/repos\//)
+  assert.match(script, /const response = await fetch\(endpoint/)
+  assert.doesNotMatch(script, /headers:\s*\{[^}]*authorization/s)
+})
