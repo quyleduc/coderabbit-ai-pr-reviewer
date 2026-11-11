@@ -95,3 +95,39 @@ test('no live GitHub mutation API is invoked by this smoke test', async () => {
   assert.equal(result.realGitHubMutations, 0)
   assert.equal(result.fakeReviewConfirmed, true)
 })
+
+test('root npm lockfile with omitted GitHub patch is explicitly excluded but accounted for', async () => {
+  const result = await smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40), expectedFileCount: 2,
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => [
+      {filename: 'src/driver.c', patch: diff, additions: 2, deletions: 2},
+      {filename: 'package-lock.json', status: 'modified', additions: 500, deletions: 320}
+    ]
+  })
+  assert.equal(result.retrievedFiles, 2)
+  assert.equal(result.reviewedFiles, 1)
+  assert.deepEqual(result.ignoredGeneratedFiles, ['package-lock.json'])
+  assert.equal(result.realGitHubMutations, 0)
+})
+
+test('unreviewable source patch still blocks success even alongside an explicit lockfile exclusion', async () => {
+  await assert.rejects(smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40), expectedFileCount: 2,
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => [
+      {filename: 'src/broken.c', additions: 1, deletions: 1},
+      {filename: 'package-lock.json', additions: 1, deletions: 1}
+    ]
+  }), /missing|usable|patch/i)
+})
+
+test('only root package-lock.json is excluded, not arbitrary nested or similarly named files', async () => {
+  for (const filename of ['src/package-lock.json', 'package-lock.json.bak', 'npm-shrinkwrap.json']) {
+    await assert.rejects(smokeReadOnlyPullRequest({
+      expectedHead: 'a'.repeat(40), expectedFileCount: 1,
+      fetchHead: async () => 'a'.repeat(40),
+      fetchPage: async () => [{filename, additions: 1, deletions: 1}]
+    }), /missing|usable|patch/i)
+  }
+})

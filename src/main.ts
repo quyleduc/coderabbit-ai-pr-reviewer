@@ -29,7 +29,8 @@ async function run(): Promise<void> {
     getInput('openai_concurrency_limit'),
     getInput('github_concurrency_limit'),
     getInput('openai_base_url'),
-    getInput('language')
+    getInput('language'),
+    getInput('llm_provider')
   )
 
   // print options
@@ -50,7 +51,7 @@ async function run(): Promise<void> {
     )
   } catch (e: any) {
     setFailed(
-      'Unable to create summary bot: verify openai_api_key and model configuration'
+      'Unable to create summary bot: verify provider credentials and model configuration'
     )
     return
   }
@@ -63,7 +64,7 @@ async function run(): Promise<void> {
     )
   } catch (e: any) {
     setFailed(
-      'Unable to create review bot: verify openai_api_key and model configuration'
+      'Unable to create review bot: verify provider credentials and model configuration'
     )
     return
   }

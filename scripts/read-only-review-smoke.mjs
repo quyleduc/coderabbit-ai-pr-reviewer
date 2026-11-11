@@ -37,12 +37,20 @@ export async function smokeReadOnlyPullRequest({
     expectedFileCount, fetchPage, {pageSize, maxPages}
   )
 
-  // Build and verify EVERY file's complete local diff before invoking even
-  // the fake publisher. Missing binary/oversized patches are hard blockers.
+  // PR metadata must account for all files. GitHub may omit generated
+  // lockfile patches; explicitly exclude only the root npm lockfile, also
+  // ignored by production's default JSON path filter. Source omissions fail.
+  const ignoredGeneratedFiles = files
+    .filter(file => file.filename === 'package-lock.json')
+    .map(file => file.filename)
+  const eligibleFiles = files.filter(file => file.filename !== 'package-lock.json')
+  if (eligibleFiles.length === 0) {
+    throw new Error('Smoke has no eligible non-generated source files')
+  }
   let totalHunks = 0
   const candidateComments = []
   const coveredFiles = []
-  for (const file of files) {
+  for (const file of eligibleFiles) {
     verifyPullRequestPatch(file)
     const index = buildChangedLineIndex(file.patch)
     if (!index.valid) {
@@ -153,6 +161,7 @@ export async function smokeReadOnlyPullRequest({
     retrievedFiles: files.length,
     reviewedFiles: coveredFiles.length,
     coveredFiles,
+    ignoredGeneratedFiles,
     reviewedHunks: totalHunks,
     syntheticFindings: candidateComments.length,
     skippedNoPatch: 0,
@@ -207,6 +216,7 @@ async function main() {
       '\n**Result:** ' + result.status +
       '\n\n**Files fetched:** ' + result.retrievedFiles +
       '\n\n**Files audited:** ' + result.reviewedFiles +
+      '\n\n**Generated lockfiles excluded:** ' + result.ignoredGeneratedFiles.length +
       '\n\n**Hunks checked:** ' + result.reviewedHunks +
       '\n\n**Synthetic findings:** ' + result.syntheticFindings +
       '\n\n**Actual GitHub writes:** 0\n' +

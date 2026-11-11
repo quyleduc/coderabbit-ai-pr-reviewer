@@ -10,8 +10,8 @@ const options = readFileSync(new URL('../src/options.ts', import.meta.url), 'utf
 test('new Responses defaults use supported current API models, not retired legacy GPT-3.5/4', () => {
   assert.match(action, /openai_light_model:[\s\S]*?default: 'gpt-6-luna'/)
   assert.match(action, /openai_heavy_model:[\s\S]*?default: 'gpt-6\.1-sol'/)
-  assert.match(workflow, /openai_light_model: gpt-6-luna/)
-  assert.match(workflow, /openai_heavy_model: gpt-6\.1-sol/)
+  assert.match(workflow, /openai_light_model: .*vars\.LLM_LIGHT_MODEL.*gpt-6-luna/)
+  assert.match(workflow, /openai_heavy_model: .*vars\.LLM_HEAVY_MODEL.*gpt-6\.1-sol/)
   assert.doesNotMatch(workflow, /openai_heavy_model: gpt-4\b/)
 })
 

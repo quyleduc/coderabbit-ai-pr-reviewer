@@ -82,7 +82,8 @@ export async function requestResponsesText({
   if (typeof apiKey !== 'string' || !apiKey.trim()) {
     throw new Error('Missing OpenAI API key')
   }
-  if (typeof model !== 'string' || !/^[A-Za-z0-9_.:-]{2,90}$/.test(model)) {
+  if (typeof model !== 'string' || model.length < 2 || model.length > 90 ||
+      !/^[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/.test(model)) {
     throw new Error('Invalid OpenAI model ID')
   }
   if (typeof prompt !== 'string' || !prompt.trim()) {

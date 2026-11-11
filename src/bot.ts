@@ -1,6 +1,7 @@
 import {info} from '@actions/core'
 import {OpenAIOptions, Options} from './options'
 import {requestResponsesText} from './responses-client'
+import {LlmConnection, resolveLlmConnection} from './llm-provider'
 
 /**
  * Keep the review orchestrator's existing Bot.chat() tuple contract.
@@ -15,11 +16,12 @@ export interface Ids {
 export class Bot {
   private readonly options: Options
   private readonly openaiOptions: OpenAIOptions
+  private readonly connection: LlmConnection
 
   constructor(options: Options, openaiOptions: OpenAIOptions) {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error('OpenAI API key is not configured')
-    }
+    this.connection = resolveLlmConnection(
+      options.llmProvider, process.env, options.apiBaseUrl
+    )
     this.options = options
     this.openaiOptions = openaiOptions
   }
@@ -27,9 +29,9 @@ export class Bot {
   chat = async (message: string, _ids: Ids): Promise<[string, Ids]> => {
     const start = Date.now()
     const responseText = await requestResponsesText({
-      apiKey: process.env.OPENAI_API_KEY ?? '',
-      apiOrg: process.env.OPENAI_API_ORG,
-      apiBaseUrl: this.options.apiBaseUrl,
+      apiKey: this.connection.apiKey,
+      apiOrg: this.connection.apiOrg,
+      apiBaseUrl: this.connection.apiBaseUrl,
       model: this.openaiOptions.model,
       prompt: message,
       systemMessage: [
@@ -41,7 +43,7 @@ export class Bot {
       timeoutMs: this.options.openaiTimeoutMS,
       retries: this.options.openaiRetries
     })
-    info('OpenAI Responses completed in ' + (Date.now() - start) + ' ms')
+    info('LLM Responses completed in ' + (Date.now() - start) + ' ms')
     return [responseText, {}]
   }
 }

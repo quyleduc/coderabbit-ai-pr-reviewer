@@ -1,5 +1,5 @@
 {
-  "plugins": ["jest", "@typescript-eslint"],
+  "plugins": ["@typescript-eslint"],
   "extends": [
     "plugin:github/recommended",
     "eslint:recommended",
@@ -22,7 +22,6 @@
   },
   "env": {
     "node": true,
-    "es6": true,
-    "jest/globals": true
+    "es6": true
   }
 }

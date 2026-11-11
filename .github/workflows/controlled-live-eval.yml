@@ -7,8 +7,14 @@ on:
         description: 'Type LIVE_MODEL_EVAL_ONLY to authorize a paid read-only model benchmark'
         required: true
         type: string
+      provider:
+        description: 'Explicit Responses API provider'
+        type: choice
+        required: true
+        default: openai
+        options: [openai, openrouter]
       model:
-        description: 'OpenAI Responses API model ID (explicitly selected)'
+        description: 'Provider-specific Responses API model ID (explicitly selected)'
         required: true
         type: string
 
@@ -36,6 +42,8 @@ jobs:
           node-version: '22'
       - name: Controlled benchmark (Responses API only, no GitHub writes)
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_PROVIDER: ${{ inputs.provider }}
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
           OPENAI_MODEL: ${{ inputs.model }}
         run: node --experimental-strip-types scripts/controlled-model-eval.mjs --live
