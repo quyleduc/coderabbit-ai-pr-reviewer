@@ -32,8 +32,8 @@ export class Options {
     reviewCommentLGTM = false,
     pathFilters: string[] | null = null,
     systemMessage = '',
-    openaiLightModel = 'gpt-3.5-turbo',
-    openaiHeavyModel = 'gpt-3.5-turbo',
+    openaiLightModel = 'gpt-6-luna',
+    openaiHeavyModel = 'gpt-6.1-sol',
     openaiModelTemperature = '0.0',
     openaiRetries = '3',
     openaiTimeoutMS = '120000',
@@ -75,7 +75,7 @@ export class Options {
     info('system_message: [configured]')
     info(`openai_light_model: ${this.openaiLightModel}`)
     info(`openai_heavy_model: ${this.openaiHeavyModel}`)
-    info(`openai_model_temperature: ${this.openaiModelTemperature}`)
+    info('openai_model_temperature: ignored by Responses transport')
     info(`openai_retries: ${this.openaiRetries}`)
     info(`openai_timeout_ms: ${this.openaiTimeoutMS}`)
     info(`openai_concurrency_limit: ${this.openaiConcurrencyLimit}`)
