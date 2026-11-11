@@ -29,8 +29,14 @@ on:
         description: 'Known added/right-side line'
         type: number
         required: true
+      provider:
+        description: 'Explicit Responses API provider'
+        type: choice
+        required: true
+        default: openai
+        options: [openai, openrouter]
       model:
-        description: 'Explicit OpenAI model'
+        description: 'Explicit provider model ID'
         type: string
         required: true
         default: gpt-6.1-sol
@@ -100,7 +106,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_PROVIDER: ${{ inputs.provider }}
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
           OPENAI_MODEL: ${{ inputs.model }}
           ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           ACCEPTANCE_PR: ${{ inputs.pr_number }}
@@ -133,7 +141,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          LLM_PROVIDER: ${{ inputs.provider }}
+          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
           OPENAI_MODEL: ${{ inputs.model }}
           ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           ACCEPTANCE_PR: ${{ inputs.pr_number }}
