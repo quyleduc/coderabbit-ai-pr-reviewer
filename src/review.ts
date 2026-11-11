@@ -18,6 +18,7 @@ import {type Options} from './options'
 import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
+import {parseReviewResponse} from './review-response'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
@@ -686,7 +687,7 @@ ${commentChain}
             return
           }
           // parse review
-          const reviews = parseReview(response, patches, options.debug)
+          const reviews = parseReviewResponse(response)
           if (reviews.length === 0) {
             reviewsFailed.push(`${filename} (unparseable model response)`)
             hunkCoverage.markFile(filename, 'failed_analysis')
@@ -912,124 +913,4 @@ ${
 
   // post the final summary comment
   await commenter.comment(`${summarizeComment}`, SUMMARIZE_TAG, 'replace')
-}
-
-interface Review {
-  startLine: number
-  endLine: number
-  comment: string
-}
-
-function parseReview(
-  response: string,
-  patches: Array<[number, number, string]>,
-  debug = false
-): Review[] {
-  const reviews: Review[] = []
-
-  response = sanitizeResponse(response.trim())
-
-  const lines = response.split('\n')
-  const lineNumberRangeRegex = /(?:^|\s)(\d+)-(\d+):\s*$/
-  const commentSeparator = '---'
-
-  let currentStartLine: number | null = null
-  let currentEndLine: number | null = null
-  let currentComment = ''
-  function storeReview(): void {
-    if (currentStartLine !== null && currentEndLine !== null) {
-      const review: Review = {
-        startLine: currentStartLine,
-        endLine: currentEndLine,
-        comment: currentComment
-      }
-
-      // Never move an invalid model range to a distant hunk.
-      // The changed-line validator in doReview decides whether it is safe
-      // to publish an inline comment.
-      reviews.push(review)
-
-      info(
-        `Stored comment for line range ${currentStartLine}-${currentEndLine}: ${currentComment.trim()}`
-      )
-    }
-  }
-
-  function sanitizeCodeBlock(comment: string, codeBlockLabel: string): string {
-    const codeBlockStart = `\`\`\`${codeBlockLabel}`
-    const codeBlockEnd = '```'
-    const lineNumberRegex = /^ *(\d+): /gm
-
-    let codeBlockStartIndex = comment.indexOf(codeBlockStart)
-
-    while (codeBlockStartIndex !== -1) {
-      const codeBlockEndIndex = comment.indexOf(
-        codeBlockEnd,
-        codeBlockStartIndex + codeBlockStart.length
-      )
-
-      if (codeBlockEndIndex === -1) break
-
-      const codeBlock = comment.substring(
-        codeBlockStartIndex + codeBlockStart.length,
-        codeBlockEndIndex
-      )
-      const sanitizedBlock = codeBlock.replace(lineNumberRegex, '')
-
-      comment =
-        comment.slice(0, codeBlockStartIndex + codeBlockStart.length) +
-        sanitizedBlock +
-        comment.slice(codeBlockEndIndex)
-
-      codeBlockStartIndex = comment.indexOf(
-        codeBlockStart,
-        codeBlockStartIndex +
-          codeBlockStart.length +
-          sanitizedBlock.length +
-          codeBlockEnd.length
-      )
-    }
-
-    return comment
-  }
-
-  function sanitizeResponse(comment: string): string {
-    comment = sanitizeCodeBlock(comment, 'suggestion')
-    comment = sanitizeCodeBlock(comment, 'diff')
-    return comment
-  }
-
-  for (const line of lines) {
-    const lineNumberRangeMatch = line.match(lineNumberRangeRegex)
-
-    if (lineNumberRangeMatch != null) {
-      storeReview()
-      currentStartLine = parseInt(lineNumberRangeMatch[1], 10)
-      currentEndLine = parseInt(lineNumberRangeMatch[2], 10)
-      currentComment = ''
-      if (debug) {
-        info(`Found line number range: ${currentStartLine}-${currentEndLine}`)
-      }
-      continue
-    }
-
-    if (line.trim() === commentSeparator) {
-      storeReview()
-      currentStartLine = null
-      currentEndLine = null
-      currentComment = ''
-      if (debug) {
-        info('Found comment separator')
-      }
-      continue
-    }
-
-    if (currentStartLine !== null && currentEndLine !== null) {
-      currentComment += `${line}\n`
-    }
-  }
-
-  storeReview()
-
-  return reviews
 }
