@@ -15,6 +15,10 @@ function sameScope(actual, target) {
     actual?.base?.sha === target.base.sha &&
     actual?.head?.ref === target.head.ref &&
     actual?.base?.ref === target.base.ref &&
+    actual?.head?.repo?.full_name === target.head.repo?.full_name &&
+    actual?.base?.repo?.full_name === target.base.repo?.full_name &&
+    actual?.draft === true &&
+    actual?.body?.includes('<!-- coderabbit:acceptance-target-v1 -->') &&
     actual?.state === 'open'
 }
 
@@ -53,7 +57,11 @@ export async function runControlledAcceptance({
       throw new Error('Stale acceptance PR head/base scope')
     }
     if (await isPublished(scope)) {
-      return {status:'already_published',files:1,hunks:1,writes:0}
+      if (!(await verifyPublished(scope))) {
+        throw new Error('Remote publication verification unavailable; checkpoint blocked')
+      }
+      await commitAcceptanceCheckpoint(true, () => writeCheckpoint(scope))
+      return {status:'already_published_checkpoint_reconciled',files:1,hunks:1,writes:1}
     }
     if (await hasPendingReview(scope)) {
       throw new Error('Pending bot review exists; manual reconciliation required')
@@ -85,7 +93,11 @@ export async function runControlledAcceptance({
     throw new Error('Stale acceptance PR scope after model response')
   }
   if (await isPublished(scope)) {
-    return {status:'already_published',files:1,hunks:1,writes:0}
+    if (!(await verifyPublished(scope))) {
+      throw new Error('Remote publication verification unavailable; checkpoint blocked')
+    }
+    await commitAcceptanceCheckpoint(true, () => writeCheckpoint(scope))
+    return {status:'already_published_checkpoint_reconciled',files:1,hunks:1,writes:1}
   }
   if (await hasPendingReview(scope)) {
     throw new Error('Pending bot review exists; manual reconciliation required')
