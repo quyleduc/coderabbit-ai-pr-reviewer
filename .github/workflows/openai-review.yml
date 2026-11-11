@@ -46,12 +46,14 @@ jobs:
       - uses: ./
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_API_KEY: ${{ vars.LLM_PROVIDER != 'openrouter' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ vars.LLM_PROVIDER == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
         with:
           debug: false
           review_comment_lgtm: false
-          openai_light_model: gpt-6-luna
-          openai_heavy_model: gpt-6.1-sol
+          llm_provider: ${{ vars.LLM_PROVIDER || 'openai' }}
+          openai_light_model: ${{ vars.LLM_LIGHT_MODEL || 'gpt-6-luna' }}
+          openai_heavy_model: ${{ vars.LLM_HEAVY_MODEL || 'gpt-6.1-sol' }}
           path_filters: |
             !dist/**
             !**/*.lock
