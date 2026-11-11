@@ -18,7 +18,7 @@ import {type Options} from './options'
 import {type Prompts} from './prompts'
 import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
-import {parseReviewResponse} from './review-response'
+import {processStructuredReview} from './review-protocol'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 import {HunkCoverage, hunkIndexForRange} from './review-hunks'
 
@@ -591,8 +591,8 @@ ${
       let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
       // loop to calculate total patch tokens
       let patchesToPack = 0
-      for (const [, , patch] of patches) {
-        const patchTokens = getTokenCount(patch)
+      for (const [index, [, , patch]] of patches.entries()) {
+        const patchTokens = getTokenCount('review_hunk id=h' + index + '\n' + patch)
         if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
           info(
             `only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`
@@ -655,6 +655,7 @@ ${
         }
 
         ins.patches += `
+---review_hunk id=h${patchesPacked - 1}---
 ${patch}
 `
         if (commentChain !== '') {
