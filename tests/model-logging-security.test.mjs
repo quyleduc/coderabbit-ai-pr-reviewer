@@ -16,8 +16,10 @@ test('do not log source-containing prompts even when debugging', () => {
   assert.doesNotMatch(review, /prompt so far:/)
 })
 
-test('do not let the external ChatGPT client log raw prompts and replies', () => {
-  assert.match(bot, /debug:\s*false/)
+test('no external ChatGPT client or raw prompt tracing is used by production', () => {
+  assert.doesNotMatch(bot, /from 'chatgpt'|ChatGPTAPI|debug:\s*true/)
+  assert.match(bot, /requestResponsesText\(/)
+  assert.doesNotMatch(bot, /info\(message\)|info\(responseText\)/)
 })
 
 test('privileged review workflow does not enable verbose model tracing by default', () => {

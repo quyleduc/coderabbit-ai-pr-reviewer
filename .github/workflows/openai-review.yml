@@ -48,7 +48,8 @@ jobs:
         with:
           debug: false
           review_comment_lgtm: false
-          openai_heavy_model: gpt-4
+          openai_light_model: gpt-6-luna
+          openai_heavy_model: gpt-6.1-sol
           path_filters: |
             !dist/**
             !**/*.lock

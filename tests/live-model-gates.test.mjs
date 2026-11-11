@@ -3,13 +3,15 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 
 const bot = readFileSync(new URL('../src/bot.ts', import.meta.url), 'utf8')
+const client = readFileSync(new URL('../src/responses-client.ts', import.meta.url), 'utf8')
 const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8')
 const workflow = () => readFileSync(new URL('../.github/workflows/controlled-live-eval.yml', import.meta.url), 'utf8')
 
-test('production Bot.chat never acknowledges a model error with empty fake success', () => {
-  assert.doesNotMatch(bot, /catch \(e: unknown\) \{\s*if \(e instanceof ChatGPTError\)[\s\S]*?return res/)
-  assert.match(bot, /throw new Error\('OpenAI request failed after configured retries'\)/)
-  assert.match(bot, /throw new Error\('OpenAI model returned an empty response'\)/)
+test('production Bot.chat delegates to fail-closed shared Responses transport', () => {
+  assert.match(bot, /await requestResponsesText\(/)
+  assert.doesNotMatch(bot, /ChatGPTAPI|from 'chatgpt'/)
+  assert.match(client, /throw new Error\('OpenAI request failed after configured retries'\)/)
+  assert.match(client, /throw new Error\('OpenAI response missing or empty'\)/)
 })
 
 test('production summary and summary context must not silently succeed when model output absent', () => {
