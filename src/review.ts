@@ -16,14 +16,16 @@ import {Inputs} from './inputs'
 import {octokit} from './octokit'
 import {type Options} from './options'
 import {type Prompts} from './prompts'
-import {parsePatch, patchStartEndLine, splitPatch} from './diff-hunks'
+import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
+import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 
 // eslint-disable-next-line camelcase
 const context = github_context
 const repo = context.repo
 
 const ignoreKeyword = '@coderabbitai: ignore'
+const REVIEW_COMPLETE_TAG = '<!-- coderabbit:review-complete-v1 -->'
 
 export const codeReview = async (
   lightBot: Bot,
@@ -94,6 +96,15 @@ export const codeReview = async (
   }
 
   if (
+    highestReviewedCommitId === context.payload.pull_request.head.sha &&
+    existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)
+  ) {
+    info('Review already completed for this head SHA, skipping duplicate run')
+    return
+  }
+
+  if (
+    !existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG) ||
     highestReviewedCommitId === '' ||
     highestReviewedCommitId === context.payload.pull_request.head.sha
   ) {
@@ -153,6 +164,13 @@ export const codeReview = async (
     } else {
       filterSelectedFiles.push(file)
     }
+  }
+
+  const fileCoverage = new Map<string, CoverageStatus>(
+    files.map(file => [file.filename, 'pending'])
+  )
+  for (const file of filterIgnoredFiles) {
+    fileCoverage.set(file.filename, 'ignored_by_policy')
   }
 
   if (filterSelectedFiles.length === 0) {
@@ -388,6 +406,10 @@ ${
   const summaries = (await Promise.all(summaryPromises)).filter(
     summary => summary !== null
   ) as Array<[string, string, boolean]>
+  const summarized = new Set(summaries.map(([filename]) => filename))
+  for (const [filename] of filesAndChanges) {
+    if (!summarized.has(filename)) fileCoverage.set(filename, 'failed_analysis')
+  }
 
   if (summaries.length > 0) {
     const batchSize = 10
@@ -520,6 +542,14 @@ ${
       )
       .map(([filename]) => filename)
 
+    for (const filename of reviewsSkipped) {
+      if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'triaged_trivial')
+      }
+    }
+
+    // A file may be only partially packed when exceeding the model budget.
+    const budgetSkipped = new Set<string>()
     // failed reviews array
     const reviewsFailed: string[] = []
     let lgtmCount = 0
@@ -527,12 +557,18 @@ ${
     const doReview = async (
       filename: string,
       fileContent: string,
+      fileDiff: string,
       patches: Array<[number, number, string]>
     ): Promise<void> => {
       info(`reviewing ${filename}`)
       // make a copy of inputs
       const ins: Inputs = inputs.clone()
       ins.filename = filename
+      const changedLineIndex = buildChangedLineIndex(fileDiff)
+      if (!changedLineIndex.valid) {
+        reviewsFailed.push(`${filename} (invalid diff: ${changedLineIndex.reason})`)
+        return
+      }
 
       // calculate tokens based on inputs so far
       let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
@@ -549,6 +585,8 @@ ${
         tokens += patchTokens
         patchesToPack += 1
       }
+
+      if (patchesToPack < patches.length) budgetSkipped.add(filename)
 
       let patchesPacked = 0
       for (const [startLine, endLine, patch] of patches) {
@@ -631,29 +669,47 @@ ${commentChain}
           }
           // parse review
           const reviews = parseReview(response, patches, options.debug)
+          if (reviews.length === 0) {
+            reviewsFailed.push(`${filename} (unparseable model response)`)
+            return
+          }
           for (const review of reviews) {
-            // check for LGTM
+            // Treat only stand-alone approval as LGTM, not substantive
+            // bug reports that happen to mention the term "LGTM".
             if (
               !options.reviewCommentLGTM &&
-              (review.comment.includes('LGTM') ||
-                review.comment.includes('looks good to me'))
+              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
             ) {
               lgtmCount += 1
+              continue
+            }
+            const anchor = resolveReviewAnchor(
+              changedLineIndex,
+              review.startLine,
+              review.endLine
+            )
+            if (!anchor.valid) {
+              reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
               continue
             }
             if (context.payload.pull_request == null) {
               warning('No pull request found, skipping.')
               continue
             }
+            const message = anchor.adjusted
+              ? `> Attached to a changed line within the model's original range ${review.startLine}-${review.endLine}.
+
+${review.comment}`
+              : review.comment
 
             try {
-              reviewCount += 1
               await commenter.bufferReviewComment(
                 filename,
-                review.startLine,
-                review.endLine,
-                `${review.comment}`
+                anchor.startLine,
+                anchor.endLine,
+                message
               )
+              reviewCount += 1
             } catch (e: any) {
               reviewsFailed.push(`${filename} comment failed (${e as string})`)
             }
@@ -672,11 +728,11 @@ ${commentChain}
     }
 
     const reviewPromises = []
-    for (const [filename, fileContent, , patches] of filesAndChangesReview) {
+    for (const [filename, fileContent, fileDiff, patches] of filesAndChangesReview) {
       if (options.maxFiles <= 0 || reviewPromises.length < options.maxFiles) {
         reviewPromises.push(
           openaiConcurrencyLimit(async () => {
-            await doReview(filename, fileContent, patches)
+            await doReview(filename, fileContent, fileDiff, patches)
           })
         )
       } else {
@@ -685,6 +741,23 @@ ${commentChain}
     }
 
     await Promise.all(reviewPromises)
+
+    for (const [filename] of filesAndChangesReview) {
+      if (fileCoverage.get(filename) === 'failed_analysis') continue
+      if (reviewsFailed.some(problem => problem.startsWith(`${filename} (`) ||
+          problem.startsWith(`${filename} comment failed`))) {
+        fileCoverage.set(filename, 'failed_analysis')
+      } else if (skippedFiles.includes(filename) || budgetSkipped.has(filename)) {
+        fileCoverage.set(filename, 'blocked_by_budget')
+      } else if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'reviewed')
+      }
+    }
+    for (const filename of skippedFiles) {
+      if (fileCoverage.get(filename) === 'pending') {
+        fileCoverage.set(filename, 'blocked_by_budget')
+      }
+    }
 
     statusMsg += `
 ${
@@ -737,18 +810,39 @@ ${
 
 </details>
 `
-    // add existing_comment_ids_block with latest head sha
-    summarizeComment += `\n${commenter.addReviewedCommitId(
-      existingCommitIdsBlock,
-      context.payload.pull_request.head.sha
-    )}`
-
-    // post the review
-    await commenter.submitReview(
+    // Publishing is part of the transaction: a model response alone does
+    // not constitute a completed review. Never checkpoint partial coverage.
+    const published = await commenter.submitReview(
       context.payload.pull_request.number,
-      commits[commits.length - 1].sha,
+      context.payload.pull_request.head.sha,
       statusMsg
     )
+    const completion = assessReviewCompletion(
+      files.map(file => file.filename),
+      files.map(file => ({
+        id: file.filename,
+        status: fileCoverage.get(file.filename) ?? 'pending'
+      })),
+      published && summariesFailed.length === 0 && reviewsFailed.length === 0
+    )
+
+    if (completion.complete) {
+      summarizeComment += `\n${commenter.addReviewedCommitId(
+        existingCommitIdsBlock,
+        context.payload.pull_request.head.sha
+      )}\n${REVIEW_COMPLETE_TAG}`
+    } else {
+      // Keep only earlier successful checkpoint IDs, never add the new head.
+      if (existingCommitIdsBlock) {
+        summarizeComment += `\n${existingCommitIdsBlock}`
+        if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
+          summarizeComment += `\n${REVIEW_COMPLETE_TAG}`
+        }
+      }
+      summarizeComment += `\n> Partial review: latest head SHA not checkpointed
+      (unprocessed or failed units: ${completion.blockers.length}).`
+      warning(`Partial review: ${completion.blockers.join(', ')}`)
+    }
   }
 
   // post the final summary comment
@@ -785,46 +879,9 @@ function parseReview(
         comment: currentComment
       }
 
-      let withinPatch = false
-      let bestPatchStartLine = -1
-      let bestPatchEndLine = -1
-      let maxIntersection = 0
-
-      for (const [startLine, endLine] of patches) {
-        const intersectionStart = Math.max(review.startLine, startLine)
-        const intersectionEnd = Math.min(review.endLine, endLine)
-        const intersectionLength = Math.max(
-          0,
-          intersectionEnd - intersectionStart + 1
-        )
-
-        if (intersectionLength > maxIntersection) {
-          maxIntersection = intersectionLength
-          bestPatchStartLine = startLine
-          bestPatchEndLine = endLine
-          withinPatch =
-            intersectionLength === review.endLine - review.startLine + 1
-        }
-
-        if (withinPatch) break
-      }
-
-      if (!withinPatch) {
-        if (bestPatchStartLine !== -1 && bestPatchEndLine !== -1) {
-          review.comment = `> Note: This review was outside of the patch, so it was mapped to the patch with the greatest overlap. Original lines [${review.startLine}-${review.endLine}]
-
-${review.comment}`
-          review.startLine = bestPatchStartLine
-          review.endLine = bestPatchEndLine
-        } else {
-          review.comment = `> Note: This review was outside of the patch, but no patch was found that overlapped with it. Original lines [${review.startLine}-${review.endLine}]
-
-${review.comment}`
-          review.startLine = patches[0][0]
-          review.endLine = patches[0][1]
-        }
-      }
-
+      // Never move an invalid model range to a distant hunk.
+      // The changed-line validator in doReview decides whether it is safe
+      // to publish an inline comment.
       reviews.push(review)
 
       info(

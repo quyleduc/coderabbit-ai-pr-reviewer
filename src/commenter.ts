@@ -231,7 +231,7 @@ ${COMMENT_TAG}`
     }
   }
 
-  async submitReview(pullNumber: number, commitId: string, statusMsg: string) {
+  async submitReview(pullNumber: number, commitId: string, statusMsg: string): Promise<boolean> {
     const body = `${COMMENT_GREETING}
 
 ${statusMsg}
@@ -251,10 +251,11 @@ ${statusMsg}
           event: 'COMMENT',
           body
         })
+        return true
       } catch (e) {
         warning(`Failed to submit empty review: ${e}`)
+        return false
       }
-      return
     }
     for (const comment of this.reviewCommentsBuffer) {
       const comments = await this.getCommentsAtRange(
@@ -328,12 +329,14 @@ ${statusMsg}
         event: 'COMMENT',
         body
       })
+      return true
     } catch (e) {
       warning(
         `Failed to create review: ${e}. Falling back to individual comments.`
       )
       await this.deletePendingReview(pullNumber)
       let commentCounter = 0
+      let allPublished = true
       for (const comment of this.reviewCommentsBuffer) {
         info(
           `Creating new review comment for ${comment.path}:${comment.startLine}-${comment.endLine}: ${comment.message}`
@@ -351,6 +354,7 @@ ${statusMsg}
         try {
           await octokit.pulls.createReviewComment(commentData)
         } catch (ee) {
+          allPublished = false
           warning(`Failed to create review comment: ${ee}`)
         }
 
@@ -359,6 +363,7 @@ ${statusMsg}
           `Comment ${commentCounter}/${this.reviewCommentsBuffer.length} posted`
         )
       }
+      return allPublished
     }
   }
 
