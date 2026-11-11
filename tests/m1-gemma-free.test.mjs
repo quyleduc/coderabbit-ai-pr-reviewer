@@ -82,7 +82,7 @@ test('trusted workflows target the free M1 preset but retain explicit opt-in and
   assert.match(evalWorkflow,/options: \[auto, omit, none, low, medium, high\]/)
   assert.match(evalWorkflow,/default: omit/)
   assert.match(read('scripts/controlled-model-eval.mjs'),/['"]omit['"]/)
-  assert.match(read('.github/workflows/controlled-live-pr-acceptance.yml'),/google\\/gemma-4-31b-it:free/)
+  assert.ok(read('.github/workflows/controlled-live-pr-acceptance.yml').includes('google/gemma-4-31b-it:free'))
   assert.doesNotMatch(read('action.yml'),/trained by OpenAI/)
   assert.match(read('docs/M1_GEMMA_FREE_BASELINE.md'),/LIVE_MODEL_EVAL_ONLY/)
 })
