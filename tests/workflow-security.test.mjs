@@ -23,6 +23,6 @@ test('trusted source is rebuilt before executing the local action', () => {
   assert.ok(checkout >= 0 && checkout < build && build < localAction)
 })
 
-test('JavaScript Action uses supported Node 20 runtime', () => {
-  assert.match(action, /using:\s*'node20'/)
+test('JavaScript Action uses supported Node 24 runtime', () => {
+  assert.match(action, /using:\s*'node24'/)
 })
