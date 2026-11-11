@@ -89,3 +89,118 @@ export const parsePatch = (
 
   return {oldHunk: oldHunkLines.join('\n'), newHunk: newHunkLines.join('\n')}
 }
+
+
+/**
+ * Exact changed-line index for GitHub PR review anchors, inspired by
+ * reviewdog's diff-filter. All coordinates refer to the new/right side.
+ *
+ * A malformed, truncated or binary patch is invalid, never silently treated
+ * as complete. Consumers must not publish unvalidated inline coordinates.
+ */
+export interface ChangedHunk {
+  startLine: number
+  endLine: number
+  addedLines: number[]
+}
+
+export type ChangedLineIndex =
+  | {valid: true; hunks: ChangedHunk[]}
+  | {valid: false; reason: string; hunks: []}
+
+export const buildChangedLineIndex = (patch: string): ChangedLineIndex => {
+  const hunks = splitPatch(patch)
+  if (hunks.length === 0) {
+    return {valid: false, reason: 'no_hunks', hunks: []}
+  }
+
+  const indexed: ChangedHunk[] = []
+  for (const hunk of hunks) {
+    const range = patchStartEndLine(hunk)
+    if (!range) return {valid: false, reason: 'invalid_header', hunks: []}
+
+    const header = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(hunk)
+    if (!header) return {valid: false, reason: 'invalid_header', hunks: []}
+    const oldCount = Number(header[2] ?? '1')
+    const newCount = Number(header[4] ?? '1')
+    let oldSeen = 0
+    let newSeen = 0
+    let newCursor = range.newHunk.startLine
+    const addedLines: number[] = []
+
+    const lines = hunk.split(/\r?\n/).slice(1)
+    if (lines[lines.length - 1] === '') lines.pop()
+
+    for (const line of lines) {
+      if (line.startsWith('\\')) {
+        // Only Git's no-newline sentinel is accepted as diff metadata.
+        if (!/^\\ No newline at end of file$/.test(line)) {
+          return {valid: false, reason: 'invalid_metadata', hunks: []}
+        }
+      } else if (line.startsWith('+')) {
+        addedLines.push(newCursor)
+        newCursor++
+        newSeen++
+      } else if (line.startsWith('-')) {
+        oldSeen++
+      } else if (line.startsWith(' ')) {
+        oldSeen++
+        newSeen++
+        newCursor++
+      } else {
+        return {valid: false, reason: 'invalid_hunk_body', hunks: []}
+      }
+    }
+    if (
+      oldSeen !== oldCount ||
+      newSeen !== newCount ||
+      !Number.isSafeInteger(newCursor)
+    ) {
+      return {valid: false, reason: 'hunk_count_mismatch', hunks: []}
+    }
+    indexed.push({
+      startLine: range.newHunk.startLine,
+      endLine: range.newHunk.endLine,
+      addedLines
+    })
+  }
+  return {valid: true, hunks: indexed}
+}
+
+export type ReviewAnchor =
+  | {valid: true; startLine: number; endLine: number; adjusted: boolean}
+  | {valid: false; reason: string}
+
+/**
+ * Require the model's original range to be within ONE hunk and contain a
+ * changed line. When it includes context, conservatively anchor a single
+ * changed line WITHIN the original requested range, never a distant hunk.
+ */
+export const resolveReviewAnchor = (
+  index: ChangedLineIndex,
+  startLine: number,
+  endLine: number
+): ReviewAnchor => {
+  if (!index.valid) return {valid: false, reason: 'invalid_diff'}
+  if (
+    !Number.isSafeInteger(startLine) ||
+    !Number.isSafeInteger(endLine) ||
+    startLine < 1 ||
+    endLine < startLine
+  ) {
+    return {valid: false, reason: 'invalid_line_range'}
+  }
+  const hunk = index.hunks.find(
+    h => startLine >= h.startLine && endLine <= h.endLine
+  )
+  if (!hunk) return {valid: false, reason: 'outside_hunk'}
+  const changed = hunk.addedLines.filter(
+    line => line >= startLine && line <= endLine
+  )
+  if (!changed.length) return {valid: false, reason: 'unchanged_line'}
+  if (changed.length === endLine - startLine + 1) {
+    return {valid: true, startLine, endLine, adjusted: false}
+  }
+  const anchor = changed[changed.length - 1]
+  return {valid: true, startLine: anchor, endLine: anchor, adjusted: true}
+}
