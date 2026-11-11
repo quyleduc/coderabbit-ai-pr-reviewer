@@ -33,13 +33,13 @@ on:
         description: 'Explicit Responses API provider'
         type: choice
         required: true
-        default: openai
+        default: openrouter
         options: [openai, openrouter]
       model:
         description: 'Explicit provider model ID'
         type: string
         required: true
-        default: gpt-6.1-sol
+        default: google/gemma-4-31b-it:free
       confirm:
         description: 'PREFLIGHT_ACCEPTANCE_ONLY, VALIDATE_ACCEPTANCE_MODEL, or PUBLISH_ACCEPTANCE_REVIEW'
         type: string
