@@ -46,3 +46,9 @@ test('publisher only confirms completion after GitHub API acknowledgement', () =
   assert.ok(block.indexOf('await octokit.pulls.submitReview(') < block.lastIndexOf('return true'))
   assert.match(block, /return false/)
 })
+
+
+test('Compare API 300-file truncation is fail-closed', () => {
+  assert.match(review, /incrementalFiles\.length >= 300 \|\| targetBranchFiles\.length >= 300/)
+  assert.match(review, /compareCommits may have truncated files at 300/)
+})
