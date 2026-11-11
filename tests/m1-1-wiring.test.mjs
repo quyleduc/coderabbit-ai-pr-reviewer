@@ -43,8 +43,10 @@ test('publisher only confirms completion after GitHub API acknowledgement', () =
   const submitStart = publisher.indexOf('async submitReview(')
   const submitEnd = publisher.indexOf('async reviewCommentReply(', submitStart)
   const block = publisher.slice(submitStart, submitEnd)
-  assert.ok(block.indexOf('await octokit.pulls.submitReview(') < block.lastIndexOf('return true'))
-  assert.match(block, /return false/)
+  assert.match(block, /await publishReviewBatch\(/)
+  assert.match(block, /await octokit\.pulls\.submitReview\(/)
+  assert.match(block, /return result\.confirmed/)
+  // Failure-injection coverage lives in review-publication.test.mjs.
 })
 
 
