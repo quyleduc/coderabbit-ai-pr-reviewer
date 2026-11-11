@@ -110,3 +110,13 @@ test('bench fixtures contain both positive and clean embedded C examples', () =>
   assert.ok(entries.some(x=>x.expected.some(y=>y.rule_id==='DIV_ZERO')))
   assert.ok(entries.some(x=>x.expected.some(y=>y.rule_id==='NULL_DEREF')))
 })
+
+
+test('checked-in entire embedded C fixture suite runs source validation and exact scorer', async () => {
+  const fixtures=JSON.parse(readFileSync(new URL('./fixtures/embedded-c-review.json',import.meta.url),'utf8'))
+  const summary=await runEvaluationSuite(fixtures, async input => JSON.stringify(input.mock_response))
+  assert.deepEqual(
+    {cases:summary.cases,tp:summary.tp,fp:summary.fp,fn:summary.fn,invalid:summary.invalid},
+    {cases:4,tp:3,fp:0,fn:0,invalid:0}
+  )
+})
