@@ -33,15 +33,16 @@ test('real PR file pagination handles 100-file pages without dropping the remain
     fetchPage: async page => {
       pages.push(page)
       if (page === 1) return [
-        {filename: 'README.md', patch: undefined},
-        {filename: 'doc.txt', patch: undefined}
+        {filename: 'README.md', patch: '@@ -1 +1 @@\n-before\n+after\n'},
+        {filename: 'doc.txt', patch: '@@ -1 +1 @@\n-a\n+b\n'}
       ]
       return [{filename: 'src/driver.c', patch: diff}]
     }
   })
   assert.deepEqual(pages, [1, 2])
-  assert.equal(result.reviewedFiles, 1)
-  assert.equal(result.skippedNoPatch, 2)
+  assert.equal(result.reviewedFiles, 3)
+  assert.equal(result.reviewedHunks, 4)
+  assert.equal(result.skippedNoPatch, 0)
 })
 
 test('stale PR HEAD refuses to run even a fake reviewer', async () => {
