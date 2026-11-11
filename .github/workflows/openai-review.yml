@@ -52,8 +52,9 @@ jobs:
           debug: false
           review_comment_lgtm: false
           llm_provider: ${{ vars.LLM_PROVIDER || 'openai' }}
-          openai_light_model: ${{ vars.LLM_LIGHT_MODEL || 'gpt-6-luna' }}
-          openai_heavy_model: ${{ vars.LLM_HEAVY_MODEL || 'gpt-6.1-sol' }}
+          # M1 free baseline when OpenRouter is selected; explicit repo vars win.
+          openai_light_model: ${{ vars.LLM_LIGHT_MODEL || (vars.LLM_PROVIDER == 'openrouter' && 'google/gemma-4-31b-it:free' || 'gpt-6-luna') }}
+          openai_heavy_model: ${{ vars.LLM_HEAVY_MODEL || (vars.LLM_PROVIDER == 'openrouter' && 'google/gemma-4-31b-it:free' || 'gpt-6.1-sol') }}
           path_filters: |
             !dist/**
             !**/*.lock
