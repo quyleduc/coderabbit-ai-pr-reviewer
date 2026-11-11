@@ -8,10 +8,11 @@ test('real GitHub-style diff supports a fully offline fake model to fake review 
   const seenPages = []
   const result = await smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'a'.repeat(40),
     fetchPage: async page => {
       seenPages.push(page)
-      return page === 1 ? [{filename: 'src/driver.c', patch: diff}] : []
+      return page === 1 ? [{filename: 'src/driver.c', patch: diff, additions: 2, deletions: 2}] : []
     }
   })
   assert.deepEqual(seenPages, [1])
@@ -29,14 +30,15 @@ test('real PR file pagination handles 100-file pages without dropping the remain
   const result = await smokeReadOnlyPullRequest({
     pageSize: 2,
     expectedHead: 'b'.repeat(40),
+    expectedFileCount: 3,
     fetchHead: async () => 'b'.repeat(40),
     fetchPage: async page => {
       pages.push(page)
       if (page === 1) return [
-        {filename: 'README.md', patch: '@@ -1 +1 @@\n-before\n+after\n'},
-        {filename: 'doc.txt', patch: '@@ -1 +1 @@\n-a\n+b\n'}
+        {filename: 'README.md', patch: '@@ -1 +1 @@\n-before\n+after\n', additions: 1, deletions: 1},
+        {filename: 'doc.txt', patch: '@@ -1 +1 @@\n-a\n+b\n', additions: 1, deletions: 1}
       ]
-      return [{filename: 'src/driver.c', patch: diff}]
+      return [{filename: 'src/driver.c', patch: diff, additions: 2, deletions: 2}]
     }
   })
   assert.deepEqual(pages, [1, 2])
@@ -49,6 +51,7 @@ test('stale PR HEAD refuses to run even a fake reviewer', async () => {
   let filesFetched = 0
   await assert.rejects(smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'b'.repeat(40),
     fetchPage: async () => {filesFetched++; return []}
   }), /head.*changed|stale/i)
@@ -58,14 +61,17 @@ test('stale PR HEAD refuses to run even a fake reviewer', async () => {
 test('API read errors and truncated file lists are never accepted as successful smoke', async () => {
   await assert.rejects(smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'a'.repeat(40),
     fetchPage: async () => {throw new Error('GitHub 429')}
   }), /GitHub 429/)
   await assert.rejects(smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'a'.repeat(40),
     pageSize: 1,
     maxPages: 2,
+    expectedFileCount: 3,
     fetchPage: async page => [{filename: 'src/x' + page + '.c', patch: diff}]
   }), /pagination|limit/i)
 })
@@ -73,6 +79,7 @@ test('API read errors and truncated file lists are never accepted as successful 
 test('a PR without a usable text patch is inconclusive, not a successful review', async () => {
   await assert.rejects(smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'a'.repeat(40),
     fetchPage: async () => [{filename: 'binary.bin'}]
   }), /usable|diff|patch/i)
@@ -81,8 +88,9 @@ test('a PR without a usable text patch is inconclusive, not a successful review'
 test('no live GitHub mutation API is invoked by this smoke test', async () => {
   const result = await smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40),
+    expectedFileCount: 1,
     fetchHead: async () => 'a'.repeat(40),
-    fetchPage: async () => [{filename: 'src/driver.c', patch: diff}]
+    fetchPage: async () => [{filename: 'src/driver.c', patch: diff, additions: 2, deletions: 2}]
   })
   assert.equal(result.realGitHubMutations, 0)
   assert.equal(result.fakeReviewConfirmed, true)
