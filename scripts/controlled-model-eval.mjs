@@ -127,36 +127,77 @@ export async function requestModelResponse({prompt, apiKey, model, provider = 'o
   })
 }
 
-async function main() {
-  const args = process.argv.slice(2)
-  const mock = args.length === 1 && args[0] === '--mock'
-  const live = args.length === 1 && args[0] === '--live'
-  if (!mock && !live) throw new Error('Select exactly --mock or --live')
-  const fixtures = JSON.parse(readFileSync(FIXTURES_URL, 'utf8'))
-  const provider = process.env.LLM_PROVIDER || 'openai'
-  const connection = live ? resolveLlmConnection(provider, process.env) : null
-  if (live && !process.env.OPENAI_MODEL) {
-    throw new Error('Live probe requires an explicit model')
+/**
+ * Safe, bounded diagnostics for credentialed evaluations. Never reflect
+ * errors from the provider, model, untrusted source or protocol parser.
+ * A typed HTTP status is safe; upstream response bodies never are.
+ */
+export function classifyEvaluationFailure(error, stage, fixtureIndex) {
+  const safeStage = ['setup', 'model_request', 'review_validation'].includes(stage)
+    ? stage : 'unknown'
+  const safeIndex = Number.isSafeInteger(fixtureIndex) &&
+    fixtureIndex >= 1 && fixtureIndex <= 100 ? fixtureIndex : 0
+  const message = error instanceof Error ? error.message : ''
+  let reason = 'UNCLASSIFIED_FAILURE'
+  if (safeStage === 'setup') {
+    reason = /^Missing (?:OpenAI|OpenRouter) provider credentials$/.test(message)
+      ? 'MISSING_CREDENTIALS' : 'SETUP_FAILED'
+  } else if (safeStage === 'review_validation') {
+    reason = 'REVIEW_PROTOCOL_REJECTED'
+  } else if (safeStage === 'model_request') {
+    const status = /^OpenAI HTTP ([1-5][0-9]{2})$/.exec(message)
+    if (status) reason = 'HTTP_' + status[1]
+    else if (message === 'OpenAI request failed after configured retries') {
+      reason = 'TRANSPORT_FAILURE'
+    } else if (message === 'OpenAI response incomplete or unconfirmed') {
+      reason = 'RESPONSE_INCOMPLETE'
+    } else if (message === 'OpenAI response missing or empty') {
+      reason = 'RESPONSE_EMPTY'
+    } else if (message === 'Invalid OpenAI response JSON') {
+      reason = 'RESPONSE_INVALID_JSON'
+    } else {
+      reason = 'MODEL_REQUEST_FAILED'
+    }
   }
-  const result = await runEvaluationSuite(fixtures, async (fixture, prompt) =>
-    mock ? JSON.stringify(fixture.mock_response) :
-      requestModelResponse({
-        prompt, apiKey:connection?.apiKey, model:process.env.OPENAI_MODEL, provider
-      })
-  )
-  // Do not print source, prompt, model output, or API credentials.
-  console.log(JSON.stringify({
-    mode: mock ? 'mock-labeled-fixtures' : 'live-model-evaluation',
-    ...result
-  }, null, 2))
+  return {stage: safeStage, reason, fixture_index: safeIndex}
+}
+
+async function main() {
+  let stage = 'setup'
+  let fixtureIndex = 0
+  try {
+    const args = process.argv.slice(2)
+    const mock = args.length === 1 && args[0] === '--mock'
+    const live = args.length === 1 && args[0] === '--live'
+    if (!mock && !live) throw new Error('Select exactly --mock or --live')
+    const fixtures = JSON.parse(readFileSync(FIXTURES_URL, 'utf8'))
+    const provider = process.env.LLM_PROVIDER || 'openai'
+    const connection = live ? resolveLlmConnection(provider, process.env) : null
+    if (live && !process.env.OPENAI_MODEL) {
+      throw new Error('Live probe requires an explicit model')
+    }
+    const result = await runEvaluationSuite(fixtures, async (fixture, prompt) => {
+      fixtureIndex++
+      stage = 'model_request'
+      const reply = mock ? JSON.stringify(fixture.mock_response) :
+        await requestModelResponse({
+          prompt, apiKey: connection?.apiKey, model: process.env.OPENAI_MODEL, provider
+        })
+      stage = 'review_validation'
+      return reply
+    })
+    // Never print source, prompt, model output, or API credentials.
+    console.log(JSON.stringify({
+      mode: mock ? 'mock-labeled-fixtures' : 'live-model-evaluation',
+      ...result
+    }, null, 2))
+  } catch (error) {
+    console.error('Controlled model evaluation failed: ' +
+      JSON.stringify(classifyEvaluationFailure(error, stage, fixtureIndex)))
+    process.exitCode = 1
+  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  try {
-    await main()
-  } catch (error) {
-    // Never log the exception object's untrusted API payload or stack.
-    console.error('Controlled model evaluation failed (invalid model output, configuration or API response)')
-    process.exitCode = 1
-  }
+  await main()
 }
