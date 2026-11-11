@@ -1,0 +1,88 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import {smokeReadOnlyPullRequest} from '../scripts/read-only-review-smoke.mjs'
+
+const diff = '@@ -1,2 +1,2 @@\n-old\n+newValue();\n keep\n@@ -8 +8 @@\n-before\n+after();\n'
+
+test('real GitHub-style diff supports a fully offline fake model to fake review submission', async () => {
+  const seenPages = []
+  const result = await smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async page => {
+      seenPages.push(page)
+      return page === 1 ? [{filename: 'src/driver.c', patch: diff}] : []
+    }
+  })
+  assert.deepEqual(seenPages, [1])
+  assert.equal(result.headSha, 'a'.repeat(40))
+  assert.equal(result.reviewedFiles, 1)
+  assert.equal(result.reviewedHunks, 2)
+  assert.equal(result.syntheticFindings, 1)
+  assert.equal(result.fakeReviewConfirmed, true)
+  assert.equal(result.replayedCandidates, 0)
+  assert.equal(result.realGitHubMutations, 0)
+})
+
+test('real PR file pagination handles 100-file pages without dropping the remaining files', async () => {
+  const pages = []
+  const result = await smokeReadOnlyPullRequest({
+    pageSize: 2,
+    expectedHead: 'b'.repeat(40),
+    fetchHead: async () => 'b'.repeat(40),
+    fetchPage: async page => {
+      pages.push(page)
+      if (page === 1) return [
+        {filename: 'README.md', patch: undefined},
+        {filename: 'doc.txt', patch: undefined}
+      ]
+      return [{filename: 'src/driver.c', patch: diff}]
+    }
+  })
+  assert.deepEqual(pages, [1, 2])
+  assert.equal(result.reviewedFiles, 1)
+  assert.equal(result.skippedNoPatch, 2)
+})
+
+test('stale PR HEAD refuses to run even a fake reviewer', async () => {
+  let filesFetched = 0
+  await assert.rejects(smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'b'.repeat(40),
+    fetchPage: async () => {filesFetched++; return []}
+  }), /head.*changed|stale/i)
+  assert.equal(filesFetched, 0)
+})
+
+test('API read errors and truncated file lists are never accepted as successful smoke', async () => {
+  await assert.rejects(smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => {throw new Error('GitHub 429')}
+  }), /GitHub 429/)
+  await assert.rejects(smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'a'.repeat(40),
+    pageSize: 1,
+    maxPages: 2,
+    fetchPage: async () => [{filename: 'src/x.c', patch: diff}]
+  }), /pagination|limit/i)
+})
+
+test('a PR without a usable text patch is inconclusive, not a successful review', async () => {
+  await assert.rejects(smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => [{filename: 'binary.bin'}]
+  }), /usable|diff|patch/i)
+})
+
+test('no live GitHub mutation API is invoked by this smoke test', async () => {
+  const result = await smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => [{filename: 'src/driver.c', patch: diff}]
+  })
+  assert.equal(result.realGitHubMutations, 0)
+  assert.equal(result.fakeReviewConfirmed, true)
+})
