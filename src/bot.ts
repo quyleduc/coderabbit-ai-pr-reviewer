@@ -38,7 +38,7 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
         systemMessage,
         apiKey: process.env.OPENAI_API_KEY,
         apiOrg: process.env.OPENAI_API_ORG ?? undefined,
-        debug: options.debug,
+        debug: false,
         maxModelTokens: openaiOptions.tokenLimits.maxTokens,
         maxResponseTokens: openaiOptions.tokenLimits.responseTokens,
         completionParams: {
@@ -60,7 +60,7 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
       return res
     } catch (e: unknown) {
       if (e instanceof ChatGPTError) {
-        warning(`Failed to chat: ${e}, backtrace: ${e.stack}`)
+        warning('OpenAI review request failed')
       }
       return res
     }
@@ -91,13 +91,10 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
         })
       } catch (e: unknown) {
         if (e instanceof ChatGPTError) {
-          info(
-            `response: ${response}, failed to send message to openai: ${e}, backtrace: ${e.stack}`
-          )
+          warning('OpenAI request failed after configured retries')
         }
       }
       const end = Date.now()
-      info(`response: ${JSON.stringify(response)}`)
       info(
         `openai sendMessage (including retries) response time: ${
           end - start
@@ -115,9 +112,6 @@ IMPORTANT: Entire response must be in the language with ISO code: ${options.lang
     // remove the prefix "with " in the response
     if (responseText.startsWith('with ')) {
       responseText = responseText.substring(5)
-    }
-    if (this.options.debug) {
-      info(`openai responses: ${responseText}`)
     }
     const newIds: Ids = {
       parentMessageId: response?.id,
