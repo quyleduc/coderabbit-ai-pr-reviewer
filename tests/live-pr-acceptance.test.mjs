@@ -70,6 +70,7 @@ test('unknown/changed scope after model blocks all writes',async()=>{
     model:async()=>modelResponse,
     isPublished:async()=>false,
     hasPendingReview:async()=>false,
+    verifyPublished:async()=>false,
     fetchCurrent:async()=>({...pr,head:{...pr.head,sha:'c'.repeat(40)}}),
     writeReview:async()=>{writes++},writeCheckpoint:async()=>{writes++}
   }),/stale|scope|changed/i)
@@ -80,6 +81,9 @@ test('wrong or missing findings cannot post or checkpoint',async()=>{
   const clean=JSON.stringify({version:1,hunks:[{id:'h0',status:'clean',findings:[]}]})
   await assert.rejects(runControlledAcceptance({...base(),mode:'publish',
     model:async()=>clean,
+    isPublished:async()=>false,
+    hasPendingReview:async()=>false,
+    verifyPublished:async()=>false,
     fetchCurrent:async()=>pr,
     writeReview:async()=>{writes++},writeCheckpoint:async()=>{writes++}
   }),/expected|finding|match/i)
@@ -89,6 +93,7 @@ test('already published acceptance scope never writes a second review',async()=>
   let writes=0
   const result=await runControlledAcceptance({...base(),mode:'publish',
     isPublished:async()=>true,hasPendingReview:async()=>false,
+    verifyPublished:async()=>true,
     model:async()=>{throw Error('no duplicate model call')},
     fetchCurrent:async()=>pr,
     writeReview:async()=>{writes++},
@@ -101,6 +106,7 @@ test('pending bot review blocks duplicate publication',async()=>{
   let writes=0
   await assert.rejects(runControlledAcceptance({...base(),mode:'publish',
     hasPendingReview:async()=>true,isPublished:async()=>false,
+    verifyPublished:async()=>false,
     model:async()=>modelResponse,
     fetchCurrent:async()=>pr,
     writeReview:async()=>{writes++},
