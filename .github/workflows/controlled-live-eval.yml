@@ -11,18 +11,19 @@ on:
         description: 'Explicit Responses API provider'
         type: choice
         required: true
-        default: openai
+        default: openrouter
         options: [openai, openrouter]
       model:
         description: 'Provider-specific Responses API model ID (explicitly selected)'
         required: true
         type: string
+        default: google/gemma-4-31b-it:free
       reasoning_effort:
-        description: 'auto = low for OpenRouter, provider default for OpenAI; otherwise explicit effort'
+        description: 'omit = no reasoning field (M1 Gemma); auto = low for other OpenRouter models'
         required: true
         type: choice
-        default: auto
-        options: [auto, none, low, medium, high]
+        default: omit
+        options: [auto, omit, none, low, medium, high]
       max_output_tokens:
         description: 'Output budget including reasoning tokens; auto = 8192 OpenRouter / 3000 OpenAI'
         required: true
