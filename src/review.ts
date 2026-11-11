@@ -16,7 +16,7 @@ import {Inputs} from './inputs'
 import {octokit} from './octokit'
 import {type Options} from './options'
 import {type Prompts} from './prompts'
-import {parsePatch, patchStartEndLine, splitPatch} from './diff-hunks'
+import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
 
 // eslint-disable-next-line camelcase
@@ -527,12 +527,18 @@ ${
     const doReview = async (
       filename: string,
       fileContent: string,
+      fileDiff: string,
       patches: Array<[number, number, string]>
     ): Promise<void> => {
       info(`reviewing ${filename}`)
       // make a copy of inputs
       const ins: Inputs = inputs.clone()
       ins.filename = filename
+      const changedLineIndex = buildChangedLineIndex(fileDiff)
+      if (!changedLineIndex.valid) {
+        reviewsFailed.push(`${filename} (invalid diff: ${changedLineIndex.reason})`)
+        return
+      }
 
       // calculate tokens based on inputs so far
       let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
@@ -632,28 +638,42 @@ ${commentChain}
           // parse review
           const reviews = parseReview(response, patches, options.debug)
           for (const review of reviews) {
-            // check for LGTM
+            // Treat only stand-alone approval as LGTM, not substantive
+            // bug reports that happen to mention the term "LGTM".
             if (
               !options.reviewCommentLGTM &&
-              (review.comment.includes('LGTM') ||
-                review.comment.includes('looks good to me'))
+              /^(LGTM!?|looks good to me[.!]?)$/i.test(review.comment.trim())
             ) {
               lgtmCount += 1
+              continue
+            }
+            const anchor = resolveReviewAnchor(
+              changedLineIndex,
+              review.startLine,
+              review.endLine
+            )
+            if (!anchor.valid) {
+              reviewsFailed.push(`${filename} (invalid finding location: ${anchor.reason})`)
               continue
             }
             if (context.payload.pull_request == null) {
               warning('No pull request found, skipping.')
               continue
             }
+            const message = anchor.adjusted
+              ? `> Attached to a changed line within the model's original range ${review.startLine}-${review.endLine}.
+
+${review.comment}`
+              : review.comment
 
             try {
-              reviewCount += 1
               await commenter.bufferReviewComment(
                 filename,
-                review.startLine,
-                review.endLine,
-                `${review.comment}`
+                anchor.startLine,
+                anchor.endLine,
+                message
               )
+              reviewCount += 1
             } catch (e: any) {
               reviewsFailed.push(`${filename} comment failed (${e as string})`)
             }
@@ -672,11 +692,11 @@ ${commentChain}
     }
 
     const reviewPromises = []
-    for (const [filename, fileContent, , patches] of filesAndChangesReview) {
+    for (const [filename, fileContent, fileDiff, patches] of filesAndChangesReview) {
       if (options.maxFiles <= 0 || reviewPromises.length < options.maxFiles) {
         reviewPromises.push(
           openaiConcurrencyLimit(async () => {
-            await doReview(filename, fileContent, patches)
+            await doReview(filename, fileContent, fileDiff, patches)
           })
         )
       } else {
@@ -785,46 +805,9 @@ function parseReview(
         comment: currentComment
       }
 
-      let withinPatch = false
-      let bestPatchStartLine = -1
-      let bestPatchEndLine = -1
-      let maxIntersection = 0
-
-      for (const [startLine, endLine] of patches) {
-        const intersectionStart = Math.max(review.startLine, startLine)
-        const intersectionEnd = Math.min(review.endLine, endLine)
-        const intersectionLength = Math.max(
-          0,
-          intersectionEnd - intersectionStart + 1
-        )
-
-        if (intersectionLength > maxIntersection) {
-          maxIntersection = intersectionLength
-          bestPatchStartLine = startLine
-          bestPatchEndLine = endLine
-          withinPatch =
-            intersectionLength === review.endLine - review.startLine + 1
-        }
-
-        if (withinPatch) break
-      }
-
-      if (!withinPatch) {
-        if (bestPatchStartLine !== -1 && bestPatchEndLine !== -1) {
-          review.comment = `> Note: This review was outside of the patch, so it was mapped to the patch with the greatest overlap. Original lines [${review.startLine}-${review.endLine}]
-
-${review.comment}`
-          review.startLine = bestPatchStartLine
-          review.endLine = bestPatchEndLine
-        } else {
-          review.comment = `> Note: This review was outside of the patch, but no patch was found that overlapped with it. Original lines [${review.startLine}-${review.endLine}]
-
-${review.comment}`
-          review.startLine = patches[0][0]
-          review.endLine = patches[0][1]
-        }
-      }
-
+      // Never move an invalid model range to a distant hunk.
+      // The changed-line validator in doReview decides whether it is safe
+      // to publish an inline comment.
       reviews.push(review)
 
       info(
