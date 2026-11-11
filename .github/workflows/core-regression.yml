@@ -19,7 +19,7 @@ jobs:
         with:
           node-version: '22'
       - name: Run pure diff parser regressions
-        run: node --experimental-strip-types --test tests/diff-hunks.test.mjs
+        run: node --experimental-strip-types --test tests/*.test.mjs
 
   build-action:
     runs-on: ubuntu-latest
