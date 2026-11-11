@@ -143,6 +143,14 @@ export const codeReview = async (
     return
   }
 
+  // GitHub compareCommits returns a maximum of 300 changed files.
+  // A response at the cap cannot prove the full PR was acquired.
+  // Fail closed until a paginated PR-files/Git-diff acquisition path exists.
+  if (incrementalFiles.length >= 300 || targetBranchFiles.length >= 300) {
+    warning('Review blocked: compareCommits may have truncated files at 300')
+    return
+  }
+
   // Filter out any file that is changed compared to the incremental changes
   const files = targetBranchFiles.filter(targetBranchFile =>
     incrementalFiles.some(
