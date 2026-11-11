@@ -29,3 +29,10 @@ test('production must reject missing or stale metadata instead of silently succe
   assert.match(review, /currentPR\.data\.head\.sha !== context\.payload\.pull_request\.head\.sha/)
   assert.match(review, /currentPR\.data\.base\.sha !== context\.payload\.pull_request\.base\.sha/)
 })
+
+
+test('checkpoint replay skip is bound to both base AND head SHA', () => {
+  assert.match(review, /currentScopeMarker/)
+  assert.match(review, /existingSummarizeCmtBody\.includes\(currentScopeMarker\)/)
+  assert.match(review, /summarizeComment \+=.*currentScopeMarker/)
+})
