@@ -60,3 +60,20 @@ test('incomplete, stale and truncated reviews fail the CI check explicitly', () 
   assert.match(review, /setFailed\('Review blocked: compareCommits may have truncated files at 300'\)/)
   assert.match(review, /setFailed\('Cannot complete review: eligible file patches unavailable'\)/)
 })
+
+
+test('summary checkpoint read/write errors propagate instead of masquerading as success', () => {
+  assert.match(publisher, /Failed to create comment: \$\{e\}[^]*?throw e/)
+  assert.match(publisher, /Failed to replace comment: \$\{e\}[^]*?throw e/)
+  assert.match(publisher, /Failed to find comment with tag: \$\{e\}[^]*?throw e/)
+  assert.match(publisher, /Failed to list comments: \$\{e\}[^]*?throw e/)
+  const finalWrite = review.indexOf('await commenter.comment(' + String.fromCharCode(96) + '\${summarizeComment}')
+  assert.ok(finalWrite >= 0, 'final summary checkpoint must be persisted')
+})
+
+test('bad credentials and model setup fail the Action visibly', () => {
+  const main = readFileSync(new URL('../src/main.ts', import.meta.url), 'utf8')
+  assert.match(main, /setFailed\(\s*[\s\S]*?Unable to create summary bot/)
+  assert.match(main, /setFailed\(\s*[\s\S]*?Unable to create review bot/)
+  assert.doesNotMatch(main, /Skipped: failed to create (?:summary|review) bot/)
+})
