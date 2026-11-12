@@ -18,11 +18,17 @@ export class HunkCoverage {
   private readonly counts = new Map<string, number>()
 
   registerFile(path: string, count: number): void {
-    if (!path || !Number.isSafeInteger(count) || count < 1 || this.counts.has(path)) {
+    if (
+      !path ||
+      !Number.isSafeInteger(count) ||
+      count < 1 ||
+      this.counts.has(path)
+    ) {
       throw new TypeError('Expected a new path with at least one hunk')
     }
     this.counts.set(path, count)
-    for (let i = 0; i < count; i++) this.statuses.set(hunkUnitId(path, i), 'pending')
+    for (let i = 0; i < count; i++)
+      this.statuses.set(hunkUnitId(path, i), 'pending')
   }
 
   mark(path: string, index: number, status: CoverageStatus): void {
@@ -43,7 +49,12 @@ export class HunkCoverage {
 
   markPacked(path: string, packed: number): void {
     const n = this.counts.get(path)
-    if (n === undefined || !Number.isSafeInteger(packed) || packed < 0 || packed > n) {
+    if (
+      n === undefined ||
+      !Number.isSafeInteger(packed) ||
+      packed < 0 ||
+      packed > n
+    ) {
       throw new RangeError('Invalid packed hunk count')
     }
     for (let i = packed; i < n; i++) this.mark(path, i, 'blocked_by_budget')
@@ -51,7 +62,12 @@ export class HunkCoverage {
 
   markUnacknowledged(path: string, packed: number): void {
     const n = this.counts.get(path)
-    if (n === undefined || !Number.isSafeInteger(packed) || packed < 0 || packed > n) {
+    if (
+      n === undefined ||
+      !Number.isSafeInteger(packed) ||
+      packed < 0 ||
+      packed > n
+    ) {
       throw new RangeError('Invalid packed hunk count')
     }
     for (let i = 0; i < packed; i++) {
@@ -82,8 +98,13 @@ export function hunkIndexForRange(
   startLine: number,
   endLine: number
 ): number | null {
-  if (!index.valid || !Number.isSafeInteger(startLine) ||
-      !Number.isSafeInteger(endLine) || startLine < 1 || endLine < startLine) {
+  if (
+    !index.valid ||
+    !Number.isSafeInteger(startLine) ||
+    !Number.isSafeInteger(endLine) ||
+    startLine < 1 ||
+    endLine < startLine
+  ) {
     return null
   }
   const found = index.hunks.findIndex(

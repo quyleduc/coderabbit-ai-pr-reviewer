@@ -16,12 +16,24 @@ import {Inputs} from './inputs'
 import {octokit} from './octokit'
 import {type Options} from './options'
 import {type Prompts} from './prompts'
-import {buildChangedLineIndex, parsePatch, patchStartEndLine, resolveReviewAnchor, splitPatch} from './diff-hunks'
+import {
+  buildChangedLineIndex,
+  parsePatch,
+  patchStartEndLine,
+  splitPatch
+} from './diff-hunks'
 import {getTokenCount} from './tokenizer'
 import {processStructuredReview} from './review-protocol'
 import {loadCompletePullRequestFiles, verifyPullRequestPatch} from './pr-files'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
-import {HunkCoverage, hunkIndexForRange} from './review-hunks'
+import {HunkCoverage} from './review-hunks'
+import {
+  formatReviewContextForPrompt,
+  retrieveReviewContext,
+  summarizeReviewContextStatus,
+  type ReviewContextProvider,
+  type ReviewContextResult
+} from './review-context'
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -29,12 +41,20 @@ const repo = context.repo
 
 const ignoreKeyword = '@coderabbitai: ignore'
 const REVIEW_COMPLETE_TAG = '<!-- coderabbit:review-complete-v1 -->'
+interface ReviewPatch {
+  startLine: number
+  endLine: number
+  promptPatch: string
+  sourcePatch: string
+}
+type FileChanges = [string, string, ReviewPatch[]]
 
 export const codeReview = async (
   lightBot: Bot,
   heavyBot: Bot,
   options: Options,
-  prompts: Prompts
+  prompts: Prompts,
+  contextProvider?: ReviewContextProvider
 ): Promise<void> => {
   const commenter: Commenter = new Commenter()
 
@@ -91,9 +111,7 @@ export const codeReview = async (
   // 300-file cap cannot prove an incremental subset is complete, so we
   // deliberately trade extra model cost for auditable full-PR coverage.
   // Bind replay suppression to BOTH base/head SHAs: base can be retargeted.
-  const currentScopeMarker = '<!-- coderabbit:review-scope-v1:' +
-    context.payload.pull_request.base.sha + ':' +
-    context.payload.pull_request.head.sha + ' -->'
+  const currentScopeMarker = `<!-- coderabbit:review-scope-v1:${context.payload.pull_request.base.sha}:${context.payload.pull_request.head.sha} -->`
 
   let currentPR
   try {
@@ -118,11 +136,13 @@ export const codeReview = async (
   if (
     existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG) &&
     existingSummarizeCmtBody.includes(currentScopeMarker) &&
-    commenter.getReviewedCommitIds(existingCommitIdsBlock).includes(
-      context.payload.pull_request.head.sha
-    )
+    commenter
+      .getReviewedCommitIds(existingCommitIdsBlock)
+      .includes(context.payload.pull_request.head.sha)
   ) {
-    info('Review already completed for this base/head SHA scope, skipping duplicate run')
+    info(
+      'Review already completed for this base/head SHA scope, skipping duplicate run'
+    )
     return
   }
 
@@ -149,7 +169,7 @@ export const codeReview = async (
       }
     )
   } catch (error) {
-    setFailed('Cannot acquire complete PR files: ' + String(error))
+    setFailed(`Cannot acquire complete PR files: ${String(error)}`)
     return
   }
 
@@ -180,30 +200,21 @@ export const codeReview = async (
   try {
     for (const file of filterSelectedFiles) verifyPullRequestPatch(file)
   } catch (error) {
-    setFailed('Cannot acquire complete PR files: ' + String(error))
+    setFailed(`Cannot acquire complete PR files: ${String(error)}`)
     return
   }
 
   // find hunks to review
-  const filteredFiles: Array<
-    [string, string, Array<[number, number, string]>] | null
-  > = filterSelectedFiles.map(file => {
-        let fileDiff = ''
-        if (file.patch != null) {
-          fileDiff = file.patch
-        }
-
-        const patches: Array<[number, number, string]> = []
-        for (const patch of splitPatch(file.patch)) {
-          const patchLines = patchStartEndLine(patch)
-          if (patchLines == null) {
-            continue
-          }
-          const hunks = parsePatch(patch)
-          if (hunks == null) {
-            continue
-          }
-          const hunksStr = `
+  const filteredFiles: Array<FileChanges | null> = filterSelectedFiles.map(
+    file => {
+      const fileDiff = file.patch ?? ''
+      const patches: ReviewPatch[] = []
+      for (const patch of splitPatch(file.patch)) {
+        const patchLines = patchStartEndLine(patch)
+        if (patchLines == null) continue
+        const hunks = parsePatch(patch)
+        if (hunks == null) continue
+        const hunksStr = `
 ---new_hunk---
 \`\`\`
 ${hunks.newHunk}
@@ -214,27 +225,25 @@ ${hunks.newHunk}
 ${hunks.oldHunk}
 \`\`\`
 `
-          patches.push([
-            patchLines.newHunk.startLine,
-            patchLines.newHunk.endLine,
-            hunksStr
-          ])
-        }
-        if (patches.length > 0) {
-          return [file.filename, fileDiff, patches] as [
-            string,
-            string,
-            Array<[number, number, string]>
-          ]
-        } else {
-          return null
-        }
-  })
+        patches.push({
+          startLine: patchLines.newHunk.startLine,
+          endLine: patchLines.newHunk.endLine,
+          promptPatch: hunksStr,
+          sourcePatch: patch
+        })
+      }
+      if (patches.length > 0) {
+        return [file.filename, fileDiff, patches]
+      } else {
+        return null
+      }
+    }
+  )
 
   // Filter out any null results
-  const filesAndChanges = filteredFiles.filter(file => file !== null) as Array<
-    [string, string, Array<[number, number, string]>]
-  >
+  const filesAndChanges = filteredFiles.filter(
+    (file): file is FileChanges => file !== null
+  )
 
   if (filesAndChanges.length === 0) {
     setFailed('Cannot complete review: eligible file patches unavailable')
@@ -248,7 +257,11 @@ ${hunks.oldHunk}
 
   let statusMsg = `<details>
 <summary>Commits</summary>
-Complete current PR diff between base ${context.payload.pull_request.base.sha} and head ${context.payload.pull_request.head.sha} (all changed files; no Compare API sampling)
+Complete current PR diff between base ${
+    context.payload.pull_request.base.sha
+  } and head ${
+    context.payload.pull_request.head.sha
+  } (all changed files; no Compare API sampling)
 </details>
 ${
   filesAndChanges.length > 0
@@ -357,9 +370,7 @@ ${
   for (const [filename, fileDiff] of filesAndChanges) {
     if (options.maxFiles <= 0 || summaryPromises.length < options.maxFiles) {
       summaryPromises.push(
-        openaiConcurrencyLimit(
-          async () => await doSummary(filename, fileDiff)
-        )
+        openaiConcurrencyLimit(async () => await doSummary(filename, fileDiff))
       )
     } else {
       skippedFiles.push(filename)
@@ -518,32 +529,58 @@ ${
     const budgetSkipped = new Set<string>()
     // failed reviews array
     const reviewsFailed: string[] = []
+    const contextResults: ReviewContextResult[] = []
     let lgtmCount = 0
     let reviewCount = 0
     const doReview = async (
       filename: string,
 
       fileDiff: string,
-      patches: Array<[number, number, string]>
+      patches: ReviewPatch[]
     ): Promise<void> => {
       info(`reviewing ${filename}`)
       // make a copy of inputs
       const ins: Inputs = inputs.clone()
       ins.filename = filename
       const changedLineIndex = buildChangedLineIndex(fileDiff)
-      if (!changedLineIndex.valid || changedLineIndex.hunks.length !== patches.length) {
+      const hunkRangesMatch =
+        changedLineIndex.valid &&
+        changedLineIndex.hunks.length === patches.length &&
+        patches.every((patch, index) => {
+          const validatedHunk = changedLineIndex.hunks[index]
+          return (
+            validatedHunk.startLine === patch.startLine &&
+            validatedHunk.endLine === patch.endLine
+          )
+        })
+      if (!hunkRangesMatch) {
         reviewsFailed.push(`${filename} (invalid or incomplete diff)`)
         hunkCoverage.markFile(filename, 'failed_analysis')
         return
       }
 
+      const contextResult = await retrieveReviewContext(contextProvider, {
+        repositoryId: `${repo.owner}/${repo.repo}`,
+        pullRequestNumber: context.payload.pull_request!.number,
+        baseSha: context.payload.pull_request!.base.sha,
+        headSha: context.payload.pull_request!.head.sha,
+        changedFile: filename,
+        hunks: patches.map(patch => ({
+          startLine: patch.startLine,
+          endLine: patch.endLine,
+          patch: patch.sourcePatch
+        }))
+      })
+      contextResults.push(contextResult)
+      ins.reviewContext = formatReviewContextForPrompt(contextResult)
+
       // calculate tokens based on inputs so far
       let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
       // loop to calculate total patch tokens
       let patchesToPack = 0
-      for (const [index, [, , patch]] of patches.entries()) {
+      for (const [index, patch] of patches.entries()) {
         const patchTokens = getTokenCount(
-          '---review_hunk id=h' + index + '---\n' + patch + '\n---end_change_section---'
+          `---review_hunk id=h${index}---\n${patch.promptPatch}\n---end_change_section---`
         )
         if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
           info(
@@ -559,7 +596,8 @@ ${
       hunkCoverage.markPacked(filename, patchesToPack)
 
       let patchesPacked = 0
-      for (const [startLine, endLine, patch] of patches) {
+      for (const patch of patches) {
+        const {startLine, endLine, promptPatch} = patch
         if (context.payload.pull_request == null) {
           warning('No pull request found, skipping.')
           continue
@@ -604,7 +642,7 @@ ${
 
         ins.patches += `
 ---review_hunk id=h${patchesPacked - 1}---
-${patch}
+${promptPatch}
 `
         if (commentChain !== '') {
           ins.patches += `
@@ -635,7 +673,12 @@ ${commentChain}
           }
           // Fail the entire file before publishing anything if the model
           // omits a hunk, invents a location or cites non-existent source.
-          const structured = processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)
+          const structured = processStructuredReview(
+            response,
+            changedLineIndex,
+            fileDiff,
+            patchesPacked
+          )
           for (const finding of structured.comments) {
             await commenter.bufferReviewComment(
               filename,
@@ -652,7 +695,12 @@ ${commentChain}
             if (options.reviewCommentLGTM) {
               const line = changedLineIndex.hunks[cleanHunk].addedLines[0]
               if (line !== undefined) {
-                await commenter.bufferReviewComment(filename, line, line, 'LGTM!')
+                await commenter.bufferReviewComment(
+                  filename,
+                  line,
+                  line,
+                  'LGTM!'
+                )
                 reviewCount += 1
               }
             }
@@ -685,13 +733,22 @@ ${commentChain}
     }
 
     await Promise.all(reviewPromises)
+    statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`
 
     for (const [filename] of filesAndChangesReview) {
       if (fileCoverage.get(filename) === 'failed_analysis') continue
-      if (reviewsFailed.some(problem => problem.startsWith(`${filename} (`) ||
-          problem.startsWith(`${filename} comment failed`))) {
+      if (
+        reviewsFailed.some(
+          problem =>
+            problem.startsWith(`${filename} (`) ||
+            problem.startsWith(`${filename} comment failed`)
+        )
+      ) {
         fileCoverage.set(filename, 'failed_analysis')
-      } else if (skippedFiles.includes(filename) || budgetSkipped.has(filename)) {
+      } else if (
+        skippedFiles.includes(filename) ||
+        budgetSkipped.has(filename)
+      ) {
         fileCoverage.set(filename, 'blocked_by_budget')
       } else if (fileCoverage.get(filename) === 'pending') {
         fileCoverage.set(filename, 'reviewed')
@@ -774,7 +831,9 @@ ${
       warning('Cannot verify current PR head (details withheld)')
     }
     if (!scopeFresh) {
-      setFailed('PR head/base changed or cannot be verified; refusing stale review publication')
+      setFailed(
+        'PR head/base changed or cannot be verified; refusing stale review publication'
+      )
       return
     }
 
@@ -795,7 +854,9 @@ ${
     )
     const hunkSnapshot = hunkCoverage.snapshot()
     const hunkCompletion = assessReviewCompletion(
-      hunkSnapshot.expectedIds, hunkSnapshot.entries, publishConfirmed
+      hunkSnapshot.expectedIds,
+      hunkSnapshot.entries,
+      publishConfirmed
     )
     const completion = {
       complete: fileCompletion.complete && hunkCompletion.complete,

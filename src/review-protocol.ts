@@ -21,15 +21,18 @@ function requireFields(
   fields: readonly string[],
   label: string
 ): asserts value is Record<string, unknown> {
-  if (!isRecord(value) ||
-      Object.keys(value).length !== fields.length ||
-      !fields.every(field => Object.prototype.hasOwnProperty.call(value, field))) {
-    throw new Error('Invalid ' + label + ' schema fields')
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== fields.length ||
+    !fields.every(field => Object.prototype.hasOwnProperty.call(value, field))
+  ) {
+    throw new Error(`Invalid ${label} schema fields`)
   }
 }
 
 function parseJsonResponse(text: string): unknown {
-  if (text.length > 262144) throw new Error('Review protocol exceeds response size limit')
+  if (text.length > 262144)
+    throw new Error('Review protocol exceeds response size limit')
   let raw = text.trim()
   const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw)
   if (fenced) raw = fenced[1]
@@ -40,7 +43,10 @@ function parseJsonResponse(text: string): unknown {
   }
 }
 
-function addedSourceLines(diff: string): {texts: Map<number, string>; hunks: number} {
+function addedSourceLines(diff: string): {
+  texts: Map<number, string>
+  hunks: number
+} {
   const texts = new Map<number, string>()
   let cursor = 0
   let hunks = 0
@@ -73,11 +79,13 @@ export function processStructuredReview(
   diff: string,
   packedHunks: number
 ): StructuredReviewResult {
-  if (!changed.valid ||
-      !Number.isSafeInteger(packedHunks) ||
-      packedHunks < 1 ||
-      packedHunks > changed.hunks.length ||
-      !diff.trim()) {
+  if (
+    !changed.valid ||
+    !Number.isSafeInteger(packedHunks) ||
+    packedHunks < 1 ||
+    packedHunks > changed.hunks.length ||
+    !diff.trim()
+  ) {
     throw new Error('Invalid diff or expected hunk count')
   }
   const root = parseJsonResponse(response)
@@ -97,7 +105,10 @@ export function processStructuredReview(
   const comments: StructuredReviewComment[] = []
   for (const rawHunk of root.hunks) {
     requireFields(rawHunk, ['id', 'status', 'findings'], 'hunk')
-    if (typeof rawHunk.id !== 'string' || !/^h(?:0|[1-9]\d*)$/.test(rawHunk.id)) {
+    if (
+      typeof rawHunk.id !== 'string' ||
+      !/^h(?:0|[1-9]\d*)$/.test(rawHunk.id)
+    ) {
       throw new Error('Invalid hunk id')
     }
     const hunkIndex = Number(rawHunk.id.slice(1))
@@ -112,13 +123,19 @@ export function processStructuredReview(
     if (!Array.isArray(rawHunk.findings) || rawHunk.findings.length > 20) {
       throw new Error('Invalid findings array')
     }
-    if ((rawHunk.status === 'clean' && rawHunk.findings.length > 0) ||
-        (rawHunk.status === 'issues' && rawHunk.findings.length === 0)) {
+    if (
+      (rawHunk.status === 'clean' && rawHunk.findings.length > 0) ||
+      (rawHunk.status === 'issues' && rawHunk.findings.length === 0)
+    ) {
       throw new Error('Hunk status and findings disagree')
     }
     if (rawHunk.status === 'clean') cleanHunks.push(hunkIndex)
     for (const finding of rawHunk.findings) {
-      requireFields(finding, ['line', 'rule_id', 'severity', 'message', 'evidence'], 'finding')
+      requireFields(
+        finding,
+        ['line', 'rule_id', 'severity', 'message', 'evidence'],
+        'finding'
+      )
       if (!Number.isSafeInteger(finding.line) || (finding.line as number) < 1) {
         throw new Error('Invalid finding line')
       }
@@ -126,30 +143,39 @@ export function processStructuredReview(
       if (!changed.hunks[hunkIndex].addedLines.includes(line)) {
         throw new Error('Finding line is not an added line in its hunk')
       }
-      if (typeof finding.evidence !== 'string' ||
-          !finding.evidence.trim() ||
-          finding.evidence.trim() !== added.texts.get(line)) {
+      if (
+        typeof finding.evidence !== 'string' ||
+        !finding.evidence.trim() ||
+        finding.evidence.trim() !== added.texts.get(line)
+      ) {
         throw new Error('Finding evidence does not match added source line')
       }
-      if (typeof finding.rule_id !== 'string' ||
-          !/^[A-Z][A-Z0-9_]{2,63}$/.test(finding.rule_id)) {
+      if (
+        typeof finding.rule_id !== 'string' ||
+        !/^[A-Z][A-Z0-9_]{2,63}$/.test(finding.rule_id)
+      ) {
         throw new Error('Invalid rule_id')
       }
-      if (finding.severity !== 'high' &&
-          finding.severity !== 'medium' &&
-          finding.severity !== 'low') {
+      if (
+        finding.severity !== 'high' &&
+        finding.severity !== 'medium' &&
+        finding.severity !== 'low'
+      ) {
         throw new Error('Invalid severity')
       }
-      if (typeof finding.message !== 'string' ||
-          finding.message.trim().length < 8 ||
-          finding.message.length > 1200) {
+      if (
+        typeof finding.message !== 'string' ||
+        finding.message.trim().length < 8 ||
+        finding.message.length > 1200
+      ) {
         throw new Error('Invalid finding message')
       }
       comments.push({
         startLine: line,
         endLine: line,
-        message: '**' + String(finding.severity).toUpperCase() +
-          ' / ' + finding.rule_id + '**\n\n' + finding.message.trim()
+        message: `**${String(finding.severity).toUpperCase()} / ${
+          finding.rule_id
+        }**\n\n${finding.message.trim()}`
       })
     }
   }

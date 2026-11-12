@@ -23,6 +23,7 @@ export class Options {
   apiBaseUrl: string
   language: string
   llmProvider: string
+  llmProtocol: string
 
   constructor(
     debug: boolean,
@@ -40,9 +41,10 @@ export class Options {
     openaiTimeoutMS = '120000',
     openaiConcurrencyLimit = '6',
     githubConcurrencyLimit = '6',
-    apiBaseUrl = 'https://api.openai.com/v1',
+    apiBaseUrl = '',
     language = 'en-US',
-    llmProvider = 'openai'
+    llmProvider = 'openai',
+    llmProtocol = 'auto'
   ) {
     this.debug = debug
     this.disableReview = disableReview
@@ -64,6 +66,7 @@ export class Options {
     this.apiBaseUrl = apiBaseUrl
     this.language = language
     this.llmProvider = llmProvider
+    this.llmProtocol = llmProtocol
   }
 
   // print all options using core.info
@@ -78,7 +81,7 @@ export class Options {
     info('system_message: [configured]')
     info(`openai_light_model: ${this.openaiLightModel}`)
     info(`openai_heavy_model: ${this.openaiHeavyModel}`)
-    info('openai_model_temperature: ignored by Responses transport')
+    info('openai_model_temperature: ignored by current LLM adapters')
     info(`openai_retries: ${this.openaiRetries}`)
     info(`openai_timeout_ms: ${this.openaiTimeoutMS}`)
     info(`openai_concurrency_limit: ${this.openaiConcurrencyLimit}`)
@@ -86,7 +89,8 @@ export class Options {
     info(`summary_token_limits: ${this.lightTokenLimits.string()}`)
     info(`review_token_limits: ${this.heavyTokenLimits.string()}`)
     info('api_base_url: [configured]')
-    info('llm_provider: ' + this.llmProvider)
+    info(`llm_provider: ${this.llmProvider}`)
+    info(`llm_protocol: ${this.llmProtocol}`)
     info(`language: ${this.language}`)
   }
 

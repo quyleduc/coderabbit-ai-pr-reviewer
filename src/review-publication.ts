@@ -20,19 +20,26 @@ export interface GitHubReviewComment {
 }
 
 export interface ReviewTransport {
+  // eslint-disable-next-line no-unused-vars
   createReview: (request: {
     commitId: string
     body?: string
     event?: 'COMMENT'
     comments?: GitHubReviewComment[]
   }) => Promise<number>
+  // eslint-disable-next-line no-unused-vars
   submitReview: (reviewId: number, body: string) => Promise<void>
+  // eslint-disable-next-line no-unused-vars
   discardPendingReview: (reviewId: number) => Promise<void>
 }
 
 export type ReviewPublishResult =
   | {confirmed: true; kind: 'empty' | 'submitted'}
-  | {confirmed: false; kind: 'create_failed' | 'submit_unconfirmed'; error: string}
+  | {
+      confirmed: false
+      kind: 'create_failed' | 'submit_unconfirmed'
+      error: string
+    }
 
 /**
  * On unknown GitHub API outcomes, return an explicit failure. Never retry
@@ -61,7 +68,9 @@ export async function publishReviewBatch(
       side: 'RIGHT'
     }
     if (comment.startLine !== comment.endLine) {
+      // eslint-disable-next-line camelcase
       result.start_line = comment.startLine
+      // eslint-disable-next-line camelcase
       result.start_side = 'RIGHT'
     }
     return result

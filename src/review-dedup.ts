@@ -25,17 +25,26 @@ export function publicationFingerprint(candidate: PublishCandidate): string {
     .replace(MARKER_REGEX, '')
     .replace(/\r\n/g, '\n')
     .trim()
-  if (!path || !message ||
-      !Number.isSafeInteger(candidate.startLine) ||
-      !Number.isSafeInteger(candidate.endLine) ||
-      candidate.startLine < 1 ||
-      candidate.endLine < candidate.startLine) {
+  if (
+    !path ||
+    !message ||
+    !Number.isSafeInteger(candidate.startLine) ||
+    !Number.isSafeInteger(candidate.endLine) ||
+    candidate.startLine < 1 ||
+    candidate.endLine < candidate.startLine
+  ) {
     throw new TypeError('Invalid PR publication candidate')
   }
   return createHash('sha256')
-    .update(JSON.stringify([
-      'publish-v1', path, candidate.startLine, candidate.endLine, message
-    ]))
+    .update(
+      JSON.stringify([
+        'publish-v1',
+        path,
+        candidate.startLine,
+        candidate.endLine,
+        message
+      ])
+    )
     .digest('hex')
 }
 
@@ -55,8 +64,7 @@ export function planReviewPublication(
   let suppressed = 0
   for (const candidate of candidates) {
     const fp = publicationFingerprint(candidate)
-    const message = candidate.message.trimEnd() +
-      '\n\n<!-- ' + MARKER_PREFIX + fp + ' -->'
+    const message = `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
     if (withinRun.has(fp) || existing.has(canonical(message))) {
       suppressed++
       continue
@@ -66,7 +74,6 @@ export function planReviewPublication(
   }
   return {pending, suppressed}
 }
-
 
 export interface RemoteReviewComment {
   user?: {login?: string | null} | null
@@ -79,15 +86,26 @@ export interface RemoteReviewComment {
  * A spoofed marker by a non-publishing user is never trusted.
  */
 export async function loadTrustedPublishedBodies(
-  fetchPage: (page: number, perPage: number) => Promise<readonly RemoteReviewComment[]>,
+  fetchPage: (
+    // eslint-disable-next-line no-unused-vars
+    page: number,
+    // eslint-disable-next-line no-unused-vars
+    _perPage: number
+  ) => Promise<readonly RemoteReviewComment[]>,
   trustedLogin: string,
   trustedCommentTag: string,
   perPage = 100,
   maxPages = 1000
 ): Promise<string[]> {
-  if (!trustedLogin || !trustedCommentTag ||
-      !Number.isSafeInteger(perPage) || perPage < 1 || perPage > 100 ||
-      !Number.isSafeInteger(maxPages) || maxPages < 1) {
+  if (
+    !trustedLogin ||
+    !trustedCommentTag ||
+    !Number.isSafeInteger(perPage) ||
+    perPage < 1 ||
+    perPage > 100 ||
+    !Number.isSafeInteger(maxPages) ||
+    maxPages < 1
+  ) {
     throw new TypeError('Invalid trusted comment query')
   }
   const bodies: string[] = []
@@ -113,7 +131,6 @@ export async function loadTrustedPublishedBodies(
   throw new Error('Review-comment pagination exceeds safety limit')
 }
 
-
 export interface AuthoredTaggedComment {
   id: number
   body?: string | null
@@ -129,7 +146,8 @@ export function findTrustedTaggedComment<T extends AuthoredTaggedComment>(
   tag: string,
   trustedLogin: string
 ): T | null {
-  if (!tag || !trustedLogin) throw new TypeError('Missing trusted comment identity')
+  if (!tag || !trustedLogin)
+    throw new TypeError('Missing trusted comment identity')
   for (const comment of comments) {
     if (
       comment.user?.login === trustedLogin &&

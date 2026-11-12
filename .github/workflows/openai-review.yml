@@ -23,6 +23,16 @@ jobs:
     if: vars.ENABLE_AUTOMATED_PR_REVIEWS == 'true'
     runs-on: ubuntu-latest
     steps:
+      - name: Require model IDs for selected non-default provider
+        if: >-
+          (vars.LLM_PROVIDER == 'freemodel' ||
+           vars.LLM_PROVIDER == 'anthropic' ||
+           vars.LLM_PROVIDER == 'gemini' ||
+           vars.LLM_PROVIDER == 'openai-compatible') &&
+          (vars.LLM_LIGHT_MODEL == '' || vars.LLM_HEAVY_MODEL == '')
+        run: |
+          echo "::error::Set repository variables LLM_LIGHT_MODEL and LLM_HEAVY_MODEL to model IDs supported by the selected provider."
+          exit 1
       # Always execute this local action from trusted base-repository code.
       # PR head code is untrusted under pull_request_target, which has
       # write permissions and access to OPENAI_API_KEY.
@@ -46,15 +56,36 @@ jobs:
       - uses: ./
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OPENAI_API_KEY: ${{ vars.LLM_PROVIDER != 'openrouter' && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ vars.LLM_PROVIDER == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
+          OPENAI_API_KEY:
+            ${{ (vars.LLM_PROVIDER == '' || vars.LLM_PROVIDER == 'openai') &&
+            secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY:
+            ${{ vars.LLM_PROVIDER == 'openrouter' && secrets.OPENROUTER_API_KEY
+            || '' }}
+          FREEMODEL_API_KEY:
+            ${{ vars.LLM_PROVIDER == 'freemodel' && secrets.FREEMODEL_API_KEY ||
+            '' }}
+          ANTHROPIC_API_KEY:
+            ${{ vars.LLM_PROVIDER == 'anthropic' && secrets.ANTHROPIC_API_KEY ||
+            '' }}
+          GEMINI_API_KEY:
+            ${{ vars.LLM_PROVIDER == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          LLM_API_KEY:
+            ${{ vars.LLM_PROVIDER == 'openai-compatible' && secrets.LLM_API_KEY
+            || '' }}
         with:
           debug: false
           review_comment_lgtm: false
           llm_provider: ${{ vars.LLM_PROVIDER || 'openai' }}
+          llm_api_protocol: ${{ vars.LLM_API_PROTOCOL || 'auto' }}
+          llm_base_url: ${{ vars.LLM_BASE_URL || '' }}
           # M1 free baseline when OpenRouter is selected; explicit repo vars win.
-          openai_light_model: ${{ vars.LLM_LIGHT_MODEL || (vars.LLM_PROVIDER == 'openrouter' && 'google/gemma-4-31b-it:free' || 'gpt-6-luna') }}
-          openai_heavy_model: ${{ vars.LLM_HEAVY_MODEL || (vars.LLM_PROVIDER == 'openrouter' && 'google/gemma-4-31b-it:free' || 'gpt-6.1-sol') }}
+          openai_light_model:
+            ${{ vars.LLM_LIGHT_MODEL || (vars.LLM_PROVIDER == 'openrouter' &&
+            'google/gemma-4-31b-it:free' || 'gpt-6-luna') }}
+          openai_heavy_model:
+            ${{ vars.LLM_HEAVY_MODEL || (vars.LLM_PROVIDER == 'openrouter' &&
+            'google/gemma-4-31b-it:free' || 'gpt-6.1-sol') }}
           path_filters: |
             !dist/**
             !**/*.lock

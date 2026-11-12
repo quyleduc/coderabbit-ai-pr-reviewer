@@ -7,6 +7,7 @@
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
     "isolatedModules": true,
+    "rewriteRelativeImportExtensions": true,
     "target": "ESNext",
     "module": "ESNext",
     "outDir": "./lib",
@@ -15,13 +16,6 @@
     "noImplicitAny": true,
     "esModuleInterop": true
   },
-  "exclude": [
-    "dist",
-    "lib",
-    "node_modules",
-    "**/*.test.ts"
-  ],
-  "include": [
-    "src/**/*"
-  ]
+  "exclude": ["dist", "lib", "node_modules", "**/*.test.ts"],
+  "include": ["src/**/*"]
 }

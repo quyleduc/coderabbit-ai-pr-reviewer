@@ -146,24 +146,41 @@ inputs:
     default: 'false'
   llm_provider:
     required: false
-    description: 'Explicit model provider: openai (default) or openrouter. OpenRouter requires OPENROUTER_API_KEY and uses a fixed HTTPS endpoint.'
+    description:
+      'Provider profile: openai, openrouter, freemodel, anthropic, gemini, or
+      openai-compatible. Set the matching API key secret in the environment.'
     default: 'openai'
+  llm_api_protocol:
+    required: false
+    description:
+      'Wire protocol: auto, openai-responses, openai-chat-completions,
+      anthropic-messages, or gemini-generate-content.'
+    default: 'auto'
+  llm_base_url:
+    required: false
+    description:
+      'Optional provider API base URL override. Must use HTTPS except localhost
+      development endpoints.'
+    default: ''
   openai_base_url:
     required: false
-    description: 'The url of the openai api interface.'
-    default: 'https://api.openai.com/v1'
+    description: 'Deprecated compatibility alias for llm_base_url.'
+    default: ''
   openai_light_model:
     required: false
     description:
-      'Model to use for simple tasks like summarizing diff on a file.'
+      'Provider-specific model ID for light tasks. Must match llm_provider.'
     default: 'gpt-6-luna'
   openai_heavy_model:
     required: false
-    description: 'Model to use for complex tasks such as code reviews.'
+    description:
+      'Provider-specific model ID for review tasks. Must match llm_provider.'
     default: 'gpt-6.1-sol'
   openai_model_temperature:
     required: false
-    description: 'Ignored by Responses API adapter; retained for backwards-compatible action inputs'
+    description:
+      'Retained for backwards compatibility; current LLM adapters ignore
+      sampling temperature.'
     default: '0.05'
   openai_retries:
     required: false
@@ -241,7 +258,9 @@ inputs:
   bot_icon:
     required: false
     description: 'The icon for the bot'
-    default: '<img src="https://avatars.githubusercontent.com/in/347564?s=41" alt="Image description" width="20" height="20">'
+    default:
+      '<img src="https://avatars.githubusercontent.com/in/347564?s=41"
+      alt="Image description" width="20" height="20">'
 runs:
   using: 'node24'
   main: 'dist/index.js'

@@ -11,6 +11,7 @@ export class Inputs {
   diff: string
   commentChain: string
   comment: string
+  reviewContext: string
 
   constructor(
     systemMessage = '',
@@ -24,7 +25,8 @@ export class Inputs {
     patches = '',
     diff = 'no diff',
     commentChain = 'no other comments on this patch',
-    comment = 'no comment provided'
+    comment = 'no comment provided',
+    reviewContext = ''
   ) {
     this.systemMessage = systemMessage
     this.title = title
@@ -38,6 +40,7 @@ export class Inputs {
     this.diff = diff
     this.commentChain = commentChain
     this.comment = comment
+    this.reviewContext = reviewContext
   }
 
   clone(): Inputs {
@@ -53,7 +56,8 @@ export class Inputs {
       this.patches,
       this.diff,
       this.commentChain,
-      this.comment
+      this.comment,
+      this.reviewContext
     )
   }
 
@@ -97,6 +101,7 @@ export class Inputs {
     if (this.comment) {
       content = content.replace('$comment', this.comment)
     }
+    content = content.replace('$review_context', () => this.reviewContext)
     return content
   }
 }

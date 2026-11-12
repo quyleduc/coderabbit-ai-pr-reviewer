@@ -27,7 +27,9 @@ export interface CompletionAssessment {
 }
 
 const terminalNonError = new Set<CoverageStatus>([
-  'reviewed', 'ignored_by_policy', 'triaged_trivial'
+  'reviewed',
+  'ignored_by_policy',
+  'triaged_trivial'
 ])
 
 export const assessReviewCompletion = (
@@ -38,14 +40,15 @@ export const assessReviewCompletion = (
   const blockers: string[] = []
   const expected = new Set(expectedIds)
   if (expectedIds.length === 0) blockers.push('no_eligible_units')
-  if (expected.size !== expectedIds.length) blockers.push('duplicate_expected_ids')
+  if (expected.size !== expectedIds.length)
+    blockers.push('duplicate_expected_ids')
 
   const accounted = new Map<string, CoverageStatus>()
   for (const entry of entries) {
     if (!expected.has(entry.id)) {
-      blockers.push('unexpected_unit:' + entry.id)
+      blockers.push(`unexpected_unit:${entry.id}`)
     } else if (accounted.has(entry.id)) {
-      blockers.push('duplicate_unit:' + entry.id)
+      blockers.push(`duplicate_unit:${entry.id}`)
     } else {
       accounted.set(entry.id, entry.status)
     }
@@ -53,9 +56,9 @@ export const assessReviewCompletion = (
   for (const id of expected) {
     const status = accounted.get(id)
     if (!status) {
-      blockers.push('missing_unit:' + id)
+      blockers.push(`missing_unit:${id}`)
     } else if (!terminalNonError.has(status)) {
-      blockers.push(status + ':' + id)
+      blockers.push(`${status}:${id}`)
     }
   }
   if (!publisherAcknowledged) blockers.push('publication_unconfirmed')
@@ -65,7 +68,8 @@ export const assessReviewCompletion = (
     blockers,
     reviewed: entries.filter(entry => entry.status === 'reviewed').length,
     skippedByPolicy: entries.filter(
-      entry => entry.status === 'ignored_by_policy' ||
+      entry =>
+        entry.status === 'ignored_by_policy' ||
         entry.status === 'triaged_trivial'
     ).length
   }

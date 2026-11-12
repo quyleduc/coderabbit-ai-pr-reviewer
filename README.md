@@ -108,6 +108,20 @@ jobs:
   OpenAI API if you have multiple. Please add this key to your GitHub Action
   secrets.
 
+### LLM providers and API protocols
+
+The Action supports OpenAI Responses, OpenAI-compatible Chat Completions,
+Anthropic Messages, and Gemini `generateContent` for non-streaming text review.
+Set `llm_provider` to select credentials/provider defaults; set
+`llm_api_protocol` to `auto` or an explicit protocol, and optionally set
+`llm_base_url`. See [LLM API protocols](./docs/LLM_API_PROTOCOLS.md) for the
+provider matrix and credential names.
+
+For FreeModel, set `llm_provider: freemodel`, add the GitHub secret
+`FREEMODEL_API_KEY`, and use model IDs from its model catalog. `auto` selects
+OpenAI Chat Completions at `https://freemodel.in/v1`; no API gateway code or
+model-specific branches are needed in the review logic.
+
 ### Models: `gpt-4` and `gpt-3.5-turbo`
 
 Recommend using `gpt-3.5-turbo` for lighter tasks such as summarizing the
