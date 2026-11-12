@@ -4,14 +4,26 @@ import {readFileSync} from 'node:fs'
 import {TokenLimits} from '../src/limits.ts'
 
 const action = readFileSync(new URL('../action.yml', import.meta.url), 'utf8')
-const workflow = readFileSync(new URL('../.github/workflows/openai-review.yml', import.meta.url), 'utf8')
-const options = readFileSync(new URL('../src/options.ts', import.meta.url), 'utf8')
+const workflow = readFileSync(
+  new URL('../.github/workflows/openai-review.yml', import.meta.url),
+  'utf8'
+)
+const options = readFileSync(
+  new URL('../src/options.ts', import.meta.url),
+  'utf8'
+)
 
 test('new Responses defaults use supported current API models, not retired legacy GPT-3.5/4', () => {
   assert.match(action, /openai_light_model:[\s\S]*?default: 'gpt-6-luna'/)
   assert.match(action, /openai_heavy_model:[\s\S]*?default: 'gpt-6\.1-sol'/)
-  assert.match(workflow, /openai_light_model: .*vars\.LLM_LIGHT_MODEL.*gpt-6-luna/)
-  assert.match(workflow, /openai_heavy_model: .*vars\.LLM_HEAVY_MODEL.*gpt-6\.1-sol/)
+  assert.match(
+    workflow,
+    /openai_light_model:[\s\S]*vars\.LLM_LIGHT_MODEL[\s\S]*gpt-6-luna/
+  )
+  assert.match(
+    workflow,
+    /openai_heavy_model:[\s\S]*vars\.LLM_HEAVY_MODEL[\s\S]*gpt-6\.1-sol/
+  )
   assert.doesNotMatch(workflow, /openai_heavy_model: gpt-4\b/)
 })
 
@@ -27,6 +39,12 @@ test('model token budgets cover both summary and JSON review output conservative
 })
 
 test('legacy temperature is clearly labelled ignored by Responses transport', () => {
-  assert.match(action, /openai_model_temperature:[\s\S]*?Ignored by Responses API adapter/)
-  assert.match(options, /openai_model_temperature: ignored by Responses transport/)
+  assert.match(
+    action,
+    /openai_model_temperature:[\s\S]*?current LLM adapters ignore\s+sampling temperature/
+  )
+  assert.match(
+    options,
+    /openai_model_temperature: ignored by current LLM adapters/
+  )
 })

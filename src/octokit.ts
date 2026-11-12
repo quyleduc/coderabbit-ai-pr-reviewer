@@ -1,6 +1,11 @@
 import {getInput, warning} from '@actions/core'
+// ESM package export maps are resolved by TypeScript and Node, but not by this
+// repository's older eslint-import-resolver-node version.
+// eslint-disable-next-line import/no-unresolved
 import {Octokit} from '@octokit/action'
+// eslint-disable-next-line import/no-unresolved
 import {retry} from '@octokit/plugin-retry'
+// eslint-disable-next-line import/no-unresolved
 import {throttling} from '@octokit/plugin-throttling'
 
 const token = getInput('token') || process.env.GITHUB_TOKEN

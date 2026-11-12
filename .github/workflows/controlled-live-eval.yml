@@ -4,28 +4,53 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: 'Type LIVE_MODEL_EVAL_ONLY to authorize a paid read-only model benchmark'
+        description:
+          'Type LIVE_MODEL_EVAL_ONLY to authorize a paid read-only model
+          benchmark'
         required: true
         type: string
       provider:
-        description: 'Explicit Responses API provider'
+        description:
+          'Provider profile whose matching repository secret is configured'
         type: choice
         required: true
         default: openrouter
-        options: [openai, openrouter]
+        options:
+          [openai, openrouter, freemodel, anthropic, gemini, openai-compatible]
+      protocol:
+        description: 'API wire protocol; auto selects the provider default'
+        type: choice
+        required: true
+        default: auto
+        options:
+          [
+            auto,
+            openai-responses,
+            openai-chat-completions,
+            anthropic-messages,
+            gemini-generate-content
+          ]
+      base_url:
+        description:
+          'Optional HTTPS base URL override (required for openai-compatible)'
+        type: string
+        required: false
       model:
-        description: 'Provider-specific Responses API model ID (explicitly selected)'
+        description: 'Provider-specific model ID (explicitly selected)'
         required: true
         type: string
-        default: google/gemma-4-31b-it:free
       reasoning_effort:
-        description: 'omit = no reasoning field (M1 Gemma); auto = low for other OpenRouter models'
+        description:
+          'omit = no reasoning field (M1 Gemma); auto = low for other OpenRouter
+          models'
         required: true
         type: choice
         default: omit
         options: [auto, omit, none, low, medium, high]
       max_output_tokens:
-        description: 'Output budget including reasoning tokens; auto = 8192 OpenRouter / 3000 OpenAI'
+        description:
+          'Output budget including reasoning tokens; auto = 8192 OpenRouter /
+          3000 OpenAI'
         required: true
         type: choice
         default: auto
@@ -37,7 +62,9 @@ permissions:
 jobs:
   evaluation:
     # Only trusted default-branch code is permitted to access the model key.
-    if: github.ref == 'refs/heads/main' && inputs.confirm == 'LIVE_MODEL_EVAL_ONLY'
+    if:
+      github.ref == 'refs/heads/main' && inputs.confirm ==
+      'LIVE_MODEL_EVAL_ONLY'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
@@ -53,12 +80,30 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Controlled benchmark (Responses API only, no GitHub writes)
+      - name: Controlled benchmark (selected API protocol, no GitHub writes)
         env:
           LLM_PROVIDER: ${{ inputs.provider }}
-          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
-          OPENAI_MODEL: ${{ inputs.model }}
+          LLM_API_PROTOCOL: ${{ inputs.protocol }}
+          LLM_BASE_URL: ${{ inputs.base_url }}
+          LLM_API_KEY:
+            ${{ inputs.provider == 'openai-compatible' && secrets.LLM_API_KEY ||
+            '' }}
+          OPENAI_API_KEY:
+            ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY:
+            ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY ||
+            '' }}
+          FREEMODEL_API_KEY:
+            ${{ inputs.provider == 'freemodel' && secrets.FREEMODEL_API_KEY ||
+            '' }}
+          ANTHROPIC_API_KEY:
+            ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY ||
+            '' }}
+          GEMINI_API_KEY:
+            ${{ inputs.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          LLM_MODEL: ${{ inputs.model }}
           LLM_REASONING_EFFORT: ${{ inputs.reasoning_effort }}
           LLM_MAX_OUTPUT_TOKENS: ${{ inputs.max_output_tokens }}
-        run: node --experimental-strip-types scripts/controlled-model-eval.mjs --live
+        run:
+          node --experimental-strip-types scripts/controlled-model-eval.mjs
+          --live

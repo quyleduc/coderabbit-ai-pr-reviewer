@@ -2,7 +2,11 @@ import {getInput, info, warning} from '@actions/core'
 // eslint-disable-next-line camelcase
 import {context as github_context} from '@actions/github'
 import {octokit} from './octokit'
-import {findTrustedTaggedComment, loadTrustedPublishedBodies, planReviewPublication} from './review-dedup'
+import {
+  findTrustedTaggedComment,
+  loadTrustedPublishedBodies,
+  planReviewPublication
+} from './review-dedup'
 import {publishReviewBatch} from './review-publication'
 
 // eslint-disable-next-line camelcase
@@ -237,7 +241,9 @@ ${COMMENT_TAG}`
    * Strict remote read: API errors must not look like an empty comment history.
    * This avoids duplicate publication when GitHub requests fail.
    */
-  private async publishedBotCommentBodies(pullNumber: number): Promise<string[]> {
+  private async publishedBotCommentBodies(
+    pullNumber: number
+  ): Promise<string[]> {
     return loadTrustedPublishedBodies(
       async (page, perPage) => {
         const response = await octokit.pulls.listReviewComments({
@@ -256,8 +262,12 @@ ${COMMENT_TAG}`
     )
   }
 
-  async submitReview(pullNumber: number, commitId: string, statusMsg: string): Promise<boolean> {
-    const body = COMMENT_GREETING + '\n\n' + statusMsg + '\n'
+  async submitReview(
+    pullNumber: number,
+    commitId: string,
+    statusMsg: string
+  ): Promise<boolean> {
+    const body = `${COMMENT_GREETING}\n\n${statusMsg}\n`
 
     let pending: Array<{
       path: string
@@ -267,13 +277,18 @@ ${COMMENT_TAG}`
     }>
     try {
       const existingBodies = await this.publishedBotCommentBodies(pullNumber)
-      const plan = planReviewPublication(this.reviewCommentsBuffer, existingBodies)
+      const plan = planReviewPublication(
+        this.reviewCommentsBuffer,
+        existingBodies
+      )
       pending = plan.pending
       if (plan.suppressed > 0) {
-        info('Suppressed ' + plan.suppressed + ' duplicate review findings')
+        info(`Suppressed ${plan.suppressed} duplicate review findings`)
       }
     } catch (e) {
-      warning('Failed to verify existing review comments, refusing publication: ' + e)
+      warning(
+        `Failed to verify existing review comments, refusing publication: ${e}`
+      )
       return false
     }
 
@@ -282,51 +297,46 @@ ${COMMENT_TAG}`
       return true
     }
 
-    const result = await publishReviewBatch(
-      pending,
-      commitId,
-      body,
-      {
-        createReview: async request => {
-          const response = await octokit.pulls.createReview({
-            owner: repo.owner,
-            repo: repo.repo,
-            // eslint-disable-next-line camelcase
-            pull_number: pullNumber,
-            // eslint-disable-next-line camelcase
-            commit_id: request.commitId,
-            body: request.body,
-            event: request.event,
-            comments: request.comments
-          })
-          return response.data.id
-        },
-        submitReview: async (reviewId, message) => {
-          await octokit.pulls.submitReview({
-            owner: repo.owner,
-            repo: repo.repo,
-            // eslint-disable-next-line camelcase
-            pull_number: pullNumber,
-            // eslint-disable-next-line camelcase
-            review_id: reviewId,
-            event: 'COMMENT',
-            body: message
-          })
-        },
-        discardPendingReview: async reviewId => {
-          await octokit.pulls.deletePendingReview({
-            owner: repo.owner,
-            repo: repo.repo,
-            // eslint-disable-next-line camelcase
-            pull_number: pullNumber,
-            // eslint-disable-next-line camelcase
-            review_id: reviewId
-          })
-        }
+    const result = await publishReviewBatch(pending, commitId, body, {
+      createReview: async request => {
+        const response = await octokit.pulls.createReview({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          commit_id: request.commitId,
+          body: request.body,
+          event: request.event,
+          comments: request.comments
+        })
+        return response.data.id
+      },
+      submitReview: async (reviewId, message) => {
+        await octokit.pulls.submitReview({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          review_id: reviewId,
+          event: 'COMMENT',
+          body: message
+        })
+      },
+      discardPendingReview: async reviewId => {
+        await octokit.pulls.deletePendingReview({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          review_id: reviewId
+        })
       }
-    )
+    })
     if (!result.confirmed) {
-      warning('Unable to confirm GitHub review publication: ' + result.error)
+      warning(`Unable to confirm GitHub review publication: ${result.error}`)
     }
     return result.confirmed
   }

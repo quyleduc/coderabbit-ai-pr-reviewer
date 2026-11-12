@@ -6,7 +6,9 @@ const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8'
 const commenter = readFileSync(new URL('../src/commenter.ts', import.meta.url), 'utf8')
 
 test('production review validates full JSON and source evidence before buffering', () => {
-  const validator = review.indexOf('processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)')
+  const validator = review.search(
+    /processStructuredReview\(\s*response,\s*changedLineIndex,\s*fileDiff,\s*patchesPacked\s*\)/
+  )
   const buffer = review.indexOf('await commenter.bufferReviewComment(', validator)
   assert.ok(validator >= 0 && buffer > validator)
   const protocol = readFileSync(new URL('../src/review-protocol.ts', import.meta.url), 'utf8')
@@ -25,7 +27,10 @@ test('completed head marker depends on publisher acknowledgement', () => {
 })
 
 test('publisher API reports failures instead of swallowing all of them', () => {
-  assert.match(commenter, /submitReview\(pullNumber: number, commitId: string, statusMsg: string\): Promise<boolean>/)
+  assert.match(
+    commenter,
+    /submitReview\(\s*pullNumber:\s*number,\s*commitId:\s*string,\s*statusMsg:\s*string\s*\):\s*Promise<boolean>/
+  )
   assert.match(commenter, /await octokit\.pulls\.submitReview\(/)
   assert.match(commenter, /await publishReviewBatch\(/)
   assert.match(commenter, /return result\.confirmed/)
@@ -35,7 +40,10 @@ test('publisher API reports failures instead of swallowing all of them', () => {
 test('success guard rejects legacy SHA markers without a completion marker', () => {
   assert.match(review, /existingSummarizeCmtBody\.includes\(REVIEW_COMPLETE_TAG\)/)
   assert.match(review, /existingSummarizeCmtBody\.includes\(currentScopeMarker\)/)
-  assert.match(review, /commenter\.getReviewedCommitIds\(existingCommitIdsBlock\)/)
+  assert.match(
+    review,
+    /commenter\s*\.\s*getReviewedCommitIds\(\s*existingCommitIdsBlock\s*\)/
+  )
 })
 
 test('structured findings do not rely on substring LGTM filtering', () => {

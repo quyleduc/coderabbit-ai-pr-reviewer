@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'Preflight (read-only), model-only (paid, no writes), or publish (gated)'
+        description:
+          'Preflight (read-only), model-only (paid, no writes), or publish
+          (gated)'
         type: choice
         required: true
         default: preflight
@@ -30,18 +32,39 @@ on:
         type: number
         required: true
       provider:
-        description: 'Explicit Responses API provider'
+        description:
+          'Provider profile whose matching repository secret is configured'
         type: choice
         required: true
         default: openrouter
-        options: [openai, openrouter]
+        options:
+          [openai, openrouter, freemodel, anthropic, gemini, openai-compatible]
+      protocol:
+        description: 'API wire protocol; auto selects the provider default'
+        type: choice
+        required: true
+        default: auto
+        options:
+          [
+            auto,
+            openai-responses,
+            openai-chat-completions,
+            anthropic-messages,
+            gemini-generate-content
+          ]
+      base_url:
+        description:
+          'Optional HTTPS base URL override (required for openai-compatible)'
+        type: string
+        required: false
       model:
         description: 'Explicit provider model ID'
         type: string
         required: true
-        default: google/gemma-4-31b-it:free
       confirm:
-        description: 'PREFLIGHT_ACCEPTANCE_ONLY, VALIDATE_ACCEPTANCE_MODEL, or PUBLISH_ACCEPTANCE_REVIEW'
+        description:
+          'PREFLIGHT_ACCEPTANCE_ONLY, VALIDATE_ACCEPTANCE_MODEL, or
+          PUBLISH_ACCEPTANCE_REVIEW'
         type: string
         required: true
 
@@ -55,10 +78,12 @@ concurrency:
 jobs:
   preflight:
     if: >-
-      github.ref == 'refs/heads/main' &&
-      ((inputs.mode == 'preflight' && inputs.confirm == 'PREFLIGHT_ACCEPTANCE_ONLY') ||
-       (inputs.mode == 'model-only' && inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL') ||
-       (inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'))
+      github.ref == 'refs/heads/main' && ((inputs.mode == 'preflight' &&
+      inputs.confirm == 'PREFLIGHT_ACCEPTANCE_ONLY') ||
+       (inputs.mode == 'model-only' && inputs.confirm ==
+      'VALIDATE_ACCEPTANCE_MODEL') ||
+       (inputs.mode == 'publish' && inputs.confirm ==
+      'PUBLISH_ACCEPTANCE_REVIEW'))
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -77,16 +102,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_DEFAULT_BRANCH:
+            ${{ github.event.repository.default_branch }}
           ACCEPTANCE_PR: ${{ inputs.pr_number }}
           ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
           ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
           ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
           ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
-        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --preflight
+        run:
+          node --experimental-strip-types scripts/live-pr-acceptance.mjs
+          --preflight
 
   model_only:
-    if: inputs.mode == 'model-only' && inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL'
+    if:
+      inputs.mode == 'model-only' && inputs.confirm ==
+      'VALIDATE_ACCEPTANCE_MODEL'
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -107,19 +137,39 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           LLM_PROVIDER: ${{ inputs.provider }}
-          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
-          OPENAI_MODEL: ${{ inputs.model }}
-          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LLM_API_PROTOCOL: ${{ inputs.protocol }}
+          LLM_BASE_URL: ${{ inputs.base_url }}
+          LLM_API_KEY:
+            ${{ inputs.provider == 'openai-compatible' && secrets.LLM_API_KEY ||
+            '' }}
+          OPENAI_API_KEY:
+            ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY:
+            ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY ||
+            '' }}
+          FREEMODEL_API_KEY:
+            ${{ inputs.provider == 'freemodel' && secrets.FREEMODEL_API_KEY ||
+            '' }}
+          ANTHROPIC_API_KEY:
+            ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY ||
+            '' }}
+          GEMINI_API_KEY:
+            ${{ inputs.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          LLM_MODEL: ${{ inputs.model }}
+          ACCEPTANCE_DEFAULT_BRANCH:
+            ${{ github.event.repository.default_branch }}
           ACCEPTANCE_PR: ${{ inputs.pr_number }}
           ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
           ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
           ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
           ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
-        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --model-only
+        run:
+          node --experimental-strip-types scripts/live-pr-acceptance.mjs
+          --model-only
 
   publish:
-    if: inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'
+    if:
+      inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'
     needs: preflight
     environment: controlled-review-acceptance
     runs-on: ubuntu-latest
@@ -142,14 +192,33 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           LLM_PROVIDER: ${{ inputs.provider }}
-          OPENAI_API_KEY: ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY || '' }}
-          OPENAI_MODEL: ${{ inputs.model }}
-          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          LLM_API_PROTOCOL: ${{ inputs.protocol }}
+          LLM_BASE_URL: ${{ inputs.base_url }}
+          LLM_API_KEY:
+            ${{ inputs.provider == 'openai-compatible' && secrets.LLM_API_KEY ||
+            '' }}
+          OPENAI_API_KEY:
+            ${{ inputs.provider == 'openai' && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY:
+            ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY ||
+            '' }}
+          FREEMODEL_API_KEY:
+            ${{ inputs.provider == 'freemodel' && secrets.FREEMODEL_API_KEY ||
+            '' }}
+          ANTHROPIC_API_KEY:
+            ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY ||
+            '' }}
+          GEMINI_API_KEY:
+            ${{ inputs.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
+          LLM_MODEL: ${{ inputs.model }}
+          ACCEPTANCE_DEFAULT_BRANCH:
+            ${{ github.event.repository.default_branch }}
           ACCEPTANCE_PR: ${{ inputs.pr_number }}
           ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
           ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
           ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
           ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
           ACCEPTANCE_CONFIRM: ${{ inputs.confirm }}
-        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --publish
+        run:
+          node --experimental-strip-types scripts/live-pr-acceptance.mjs
+          --publish

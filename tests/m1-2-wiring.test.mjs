@@ -6,7 +6,10 @@ const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8'
 const prompts = readFileSync(new URL('../src/prompts.ts', import.meta.url), 'utf8')
 
 test('production model response uses strict structured validator, not Markdown parser', () => {
-  assert.match(review, /processStructuredReview\(response, changedLineIndex, fileDiff, patchesPacked\)/)
+  assert.match(
+    review,
+    /processStructuredReview\(\s*response,\s*changedLineIndex,\s*fileDiff,\s*patchesPacked\s*\)/
+  )
   assert.doesNotMatch(review, /parseReviewResponse\(response\)/)
 })
 
@@ -16,7 +19,9 @@ test('every packed hunk has a stable h-prefixed id in model input', () => {
 })
 
 test('publisher buffers only validated findings from structured output', () => {
-  const validate = review.indexOf('processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)')
+  const validate = review.search(
+    /processStructuredReview\(\s*response,\s*changedLineIndex,\s*fileDiff,\s*patchesPacked\s*\)/
+  )
   const publish = review.indexOf('await commenter.bufferReviewComment(', validate)
   assert.ok(validate > 0 && publish > validate)
 })

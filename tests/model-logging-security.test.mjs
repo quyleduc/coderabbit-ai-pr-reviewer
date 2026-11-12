@@ -3,9 +3,18 @@ import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
 
 const bot = readFileSync(new URL('../src/bot.ts', import.meta.url), 'utf8')
-const review = readFileSync(new URL('../src/review.ts', import.meta.url), 'utf8')
-const workflow = readFileSync(new URL('../.github/workflows/openai-review.yml', import.meta.url), 'utf8')
-const options = readFileSync(new URL('../src/options.ts', import.meta.url), 'utf8')
+const review = readFileSync(
+  new URL('../src/review.ts', import.meta.url),
+  'utf8'
+)
+const workflow = readFileSync(
+  new URL('../.github/workflows/openai-review.yml', import.meta.url),
+  'utf8'
+)
+const options = readFileSync(
+  new URL('../src/options.ts', import.meta.url),
+  'utf8'
+)
 
 test('do not log raw LLM responses into GitHub Actions logs', () => {
   assert.doesNotMatch(bot, /info\(\x60response:.*JSON\.stringify\(response\)/)
@@ -18,7 +27,7 @@ test('do not log source-containing prompts even when debugging', () => {
 
 test('no external ChatGPT client or raw prompt tracing is used by production', () => {
   assert.doesNotMatch(bot, /from 'chatgpt'|ChatGPTAPI|debug:\s*true/)
-  assert.match(bot, /requestResponsesText\(/)
+  assert.match(bot, /requestLlmText\(/)
   assert.doesNotMatch(bot, /info\(message\)|info\(responseText\)/)
 })
 

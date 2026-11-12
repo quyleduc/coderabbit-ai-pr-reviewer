@@ -22,7 +22,10 @@ export const splitPatch = (patch: string | null | undefined): string[] => {
 
   const starts: number[] = []
   // RegExp must be fresh for each call: avoid lastIndex state leakage.
-  const matcher = new RegExp(HUNK_HEADER_GLOBAL.source, HUNK_HEADER_GLOBAL.flags)
+  const matcher = new RegExp(
+    HUNK_HEADER_GLOBAL.source,
+    HUNK_HEADER_GLOBAL.flags
+  )
   let match: RegExpExecArray | null
   while ((match = matcher.exec(patch)) !== null) {
     starts.push(match.index)
@@ -71,15 +74,16 @@ export const parsePatch = (
     if (line.startsWith('-')) {
       oldHunkLines.push(line.substring(1))
     } else if (line.startsWith('+')) {
-      newHunkLines.push(newLine + ': ' + line.substring(1))
+      newHunkLines.push(`${newLine}: ${line.substring(1)}`)
       newLine++
     } else if (line.startsWith(' ')) {
       oldHunkLines.push(line)
       if (
         removalOnly ||
-        (currentLine > skipStart && currentLine <= contentLines.length - skipEnd)
+        (currentLine > skipStart &&
+          currentLine <= contentLines.length - skipEnd)
       ) {
-        newHunkLines.push(newLine + ': ' + line)
+        newHunkLines.push(`${newLine}: ${line}`)
       } else {
         newHunkLines.push(line)
       }
@@ -89,7 +93,6 @@ export const parsePatch = (
 
   return {oldHunk: oldHunkLines.join('\n'), newHunk: newHunkLines.join('\n')}
 }
-
 
 /**
  * Exact changed-line index for GitHub PR review anchors, inspired by

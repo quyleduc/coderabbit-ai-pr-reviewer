@@ -28,7 +28,10 @@ test('publisher reconciles existing comments without destructive old-comment del
   const submitEnd = publisher.indexOf('async reviewCommentReply(', submitStart)
   const block = publisher.slice(submitStart, submitEnd)
   assert.match(block, /publishedBotCommentBodies\(pullNumber\)/)
-  assert.match(block, /planReviewPublication\(this\.reviewCommentsBuffer, existingBodies\)/)
+  assert.match(
+    block,
+    /planReviewPublication\(\s*this\.reviewCommentsBuffer,\s*existingBodies\s*\)/
+  )
   assert.doesNotMatch(block, /pulls\.deleteReviewComment\(/)
   assert.doesNotMatch(block, /createReviewComment\(/)
 })
@@ -59,7 +62,10 @@ test('PR-file acquisition is full-scope rather than Compare API capped', () => {
 
 test('incomplete, stale and truncated reviews fail the CI check explicitly', () => {
   assert.match(review, /setFailed\('Review incomplete; no latest-head checkpoint recorded'\)/)
-  assert.match(review, /setFailed\('PR head\/base changed or cannot be verified/)
+  assert.match(
+    review,
+    /setFailed\(\s*['"`]PR head\/base changed or cannot be verified/
+  )
   assert.match(review, /setFailed\('Cannot acquire complete PR files:/)
   assert.match(review, /setFailed\('Cannot complete review: eligible file patches unavailable'\)/)
 })
@@ -89,7 +95,9 @@ test('review checkpoints are loaded only from authenticated bot comments', () =>
 
 
 test('structured hunk completion follows verified model verdicts', () => {
-  const validator = review.indexOf('processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked)')
+  const validator = review.search(
+    /processStructuredReview\(\s*response,\s*changedLineIndex,\s*fileDiff,\s*patchesPacked\s*\)/
+  )
   const acknowledgement = review.indexOf("hunkCoverage.mark(filename, hunkIndex, 'reviewed')")
   assert.ok(validator >= 0 && acknowledgement > validator,
     'verify all model findings before acknowledging a hunk')
