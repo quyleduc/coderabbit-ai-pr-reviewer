@@ -1542,9 +1542,9 @@ __nccwpck_require__.r(__webpack_exports__);
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(_actions_core__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _bot__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(6138);
 /* harmony import */ var _options__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(8568);
-/* harmony import */ var _prompts__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(9243);
-/* harmony import */ var _review__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(5754);
-/* harmony import */ var _review_comment__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(2046);
+/* harmony import */ var _prompts__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(8161);
+/* harmony import */ var _review__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(5754);
+/* harmony import */ var _review_comment__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(2046);
 
 
 
@@ -1555,7 +1555,7 @@ async function run() {
     const options = new _options__WEBPACK_IMPORTED_MODULE_2__/* .Options */ .JY((0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getBooleanInput)('debug'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getBooleanInput)('disable_review'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getBooleanInput)('disable_release_notes'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('max_files'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getBooleanInput)('review_simple_changes'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getBooleanInput)('review_comment_lgtm'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getMultilineInput)('path_filters'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('system_message'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_light_model'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_heavy_model'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_model_temperature'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_retries'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_timeout_ms'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_concurrency_limit'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('github_concurrency_limit'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('llm_base_url') || (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('openai_base_url'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('language'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('llm_provider'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('llm_api_protocol'));
     // print options
     options.print();
-    const prompts = new _prompts__WEBPACK_IMPORTED_MODULE_5__/* .Prompts */ .Y((0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('summarize'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('summarize_release_notes'));
+    const prompts = new _prompts__WEBPACK_IMPORTED_MODULE_3__/* .Prompts */ .Y((0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('summarize'), (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.getInput)('summarize_release_notes'));
     // Create two bots, one for summary and one for review
     let lightBot = null;
     try {
@@ -1577,10 +1577,10 @@ async function run() {
         // check if the event is pull_request
         if (process.env.GITHUB_EVENT_NAME === 'pull_request' ||
             process.env.GITHUB_EVENT_NAME === 'pull_request_target') {
-            await (0,_review__WEBPACK_IMPORTED_MODULE_3__/* .codeReview */ .C)(lightBot, heavyBot, options, prompts);
+            await (0,_review__WEBPACK_IMPORTED_MODULE_4__/* .codeReview */ .C)(lightBot, heavyBot, options, prompts);
         }
         else if (process.env.GITHUB_EVENT_NAME === 'pull_request_review_comment') {
-            await (0,_review_comment__WEBPACK_IMPORTED_MODULE_4__/* .handleReviewComment */ .C)(heavyBot, options, prompts);
+            await (0,_review_comment__WEBPACK_IMPORTED_MODULE_5__/* .handleReviewComment */ .C)(heavyBot, options, prompts);
         }
         else {
             (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.warning)('Skipped: this action only works on push events or pull_request');
@@ -5767,13 +5767,64 @@ class OpenAIOptions {
 
 /***/ }),
 
-/***/ 9243:
+/***/ 8161:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 "use strict";
-/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   Y: () => (/* binding */ Prompts)
-/* harmony export */ });
+
+// EXPORTS
+__nccwpck_require__.d(__webpack_exports__, {
+  Y: () => (/* binding */ Prompts)
+});
+
+;// CONCATENATED MODULE: ./lib/rule-catalog.js
+/** Canonical categories shared by production prompts, validation and evals. */
+const REVIEW_RULES = {
+    NULL_DEREF: 'Pointer is dereferenced without a proven non-null guarantee.',
+    DIV_ZERO: 'A divisor can be zero when evaluated.',
+    OUT_OF_BOUNDS: 'An access can exceed the valid array or buffer bounds.',
+    INTEGER_OVERFLOW: 'Arithmetic can overflow in a way that breaks correctness or safety.',
+    USE_AFTER_FREE: 'Memory is accessed after its lifetime has ended.',
+    DOUBLE_FREE: 'The same allocation can be released more than once.',
+    RESOURCE_LEAK: 'A resource is not released on a reachable path.',
+    UNINITIALIZED_READ: 'A value can be read before it is initialized.',
+    DATA_RACE: 'Concurrent accesses can race without required synchronization.',
+    DEADLOCK: 'The changed code can create a lock-order cycle or wait forever.',
+    INVALID_STATE: 'The code permits an invalid state transition or invariant violation.',
+    API_MISUSE: 'An API is called with arguments or ordering that violate its contract.',
+    ERROR_HANDLING: 'An error result is ignored or handled in a way that breaks correctness.',
+    SECURITY: 'The change creates a concrete security weakness not covered by a more specific category.',
+    LOGIC_ERROR: 'The changed logic produces an incorrect result for a concrete input.',
+    OTHER_DEFECT: 'A concrete correctness defect that does not fit another listed category.'
+};
+const ruleAliases = {
+    NULL_POINTER: 'NULL_DEREF',
+    NULL_POINTER_DEREFERENCE: 'NULL_DEREF',
+    NULL_POINTER_DEREF: 'NULL_DEREF',
+    DIVIDE_BY_ZERO: 'DIV_ZERO',
+    DIVISION_BY_ZERO: 'DIV_ZERO',
+    ZERO_DIVISION: 'DIV_ZERO',
+    BUFFER_OVERFLOW: 'OUT_OF_BOUNDS',
+    ARRAY_BOUNDS: 'OUT_OF_BOUNDS',
+    ARRAY_OUT_OF_BOUNDS: 'OUT_OF_BOUNDS'
+};
+/** Normalize common model aliases while keeping unknown labels distinguishable. */
+function canonicalizeRuleId(value) {
+    if (Object.prototype.hasOwnProperty.call(REVIEW_RULES, value)) {
+        return value;
+    }
+    return ruleAliases[value] ?? 'NON_CANONICAL';
+}
+function renderReviewRuleCatalog() {
+    return Object.entries(REVIEW_RULES)
+        .map(([id, description]) => `- ${id}: ${description}`)
+        .join('\n');
+}
+
+;// CONCATENATED MODULE: ./lib/prompts.js
+// eslint-disable-next-line import/extensions
+
+const reviewRuleCatalog = renderReviewRuleCatalog();
 class Prompts {
     summarize;
     summarizeReleaseNotes;
@@ -5901,7 +5952,11 @@ Rules:
 - Finding line is a NEW-side ADDED (+) line within the SAME hunk.
 - "evidence" is the entire source text of that added line, excluding the
   plus-sign, line-number prefix and surrounding whitespace. Copy it exactly.
-- "rule_id" is an uppercase underscore-separated identifier.
+- Prefer exactly one ID from this canonical defect taxonomy:
+${reviewRuleCatalog}
+- Choose the most specific applicable ID. Use OTHER_DEFECT only when none of
+  the listed categories fits a concrete, source-supported defect. Never invent
+  an ID or report an issue merely to fill a category.
 - "severity" is exactly "low", "medium" or "high".
 - "message" must identify a concrete actionable defect, in plain language.
 - Do not invent a finding for context-only or deleted lines.

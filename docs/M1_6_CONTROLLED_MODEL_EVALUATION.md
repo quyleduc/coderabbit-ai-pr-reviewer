@@ -1,5 +1,9 @@
 # M1.6 — Controlled model evaluation and fail-closed LLM responses
 
+> Historical milestone record. The current six-case live evaluation, canonical
+> rule catalog, per-case safe metrics, and quality gate are documented in
+> [CONTROLLED_LIVE_EVALUATION.md](./CONTROLLED_LIVE_EVALUATION.md).
+
 Status: Draft PR #8, stacked on Draft PR #7 → #6 → #5 → #4 → #3.
 Main is not modified by this milestone.
 

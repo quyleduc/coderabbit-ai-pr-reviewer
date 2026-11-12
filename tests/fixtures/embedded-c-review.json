@@ -109,5 +109,55 @@
         }
       ]
     }
+  },
+  {
+    "id": "unbounded-copy",
+    "filename": "src/storage/name.c",
+    "title": "Use unbounded copy into a fixed local buffer",
+    "description": "A fixed-size local name buffer is now filled from an unconstrained source string.",
+    "patch": "@@ -1,6 +1,4 @@\n void store_name(const char *src) {\n     char name[8];\n-    size_t length = strnlen(src, sizeof(name) - 1);\n-    memcpy(name, src, length);\n-    name[length] = '\\0';\n+    strcpy(name, src);\n }\n",
+    "expected": [
+      {"line": 3, "rule_id": "OUT_OF_BOUNDS"}
+    ],
+    "mock_response": {
+      "version": 1,
+      "hunks": [
+        {
+          "id": "h0",
+          "status": "issues",
+          "findings": [
+            {
+              "line": 3,
+              "rule_id": "OUT_OF_BOUNDS",
+              "severity": "high",
+              "message": "strcpy writes the complete source string without a bound and can exceed the eight-byte name buffer.",
+              "evidence": "    strcpy(name, src);"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "id": "littlefs-pr-966-fix",
+    "filename": "lfs.c",
+    "title": "Fix DivideByZero exception when filesystem is completely full",
+    "description": "Upstream littlefs pull request #966 changes the divisor used by the no-free-space diagnostic after block-count inference. The change is reviewed as a clean fix.",
+    "provenance": {
+      "repository": "littlefs-project/littlefs",
+      "pullRequest": 966,
+      "url": "https://github.com/littlefs-project/littlefs/pull/966",
+      "baseSha": "4dd30c1b8f1b416633fe63a338ede8934b6449a9",
+      "headSha": "1bc14933b76a6fc0b8b82f6a46479ff396be2656",
+      "labelRationale": "The diagnostic now uses the mounted filesystem's resolved block_count; the upstream PR also tests full-volume exhaustion with inferred block count."
+    },
+    "patch": "@@ -688,7 +688,7 @@ static int lfs_alloc(lfs_t *lfs, lfs_block_t *block) {\n         if (lfs->lookahead.ckpoint <= 0) {\n             LFS_ERROR(\"No more free space 0x%\"PRIx32,\n                     (lfs->lookahead.start + lfs->lookahead.next)\n-                        % lfs->cfg->block_count);\n+                        % lfs->block_count);\n             return LFS_ERR_NOSPC;\n         }\n ",
+    "expected": [],
+    "mock_response": {
+      "version": 1,
+      "hunks": [
+        {"id": "h0", "status": "clean", "findings": []}
+      ]
+    }
   }
 ]
