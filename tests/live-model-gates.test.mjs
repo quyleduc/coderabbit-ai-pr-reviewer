@@ -65,6 +65,7 @@ test('read-only CI never gives secrets to PR-head mock evaluator', () => {
     new URL('../.github/workflows/core-regression.yml', import.meta.url),
     'utf8'
   )
+  assert.match(yml, /npm ci --ignore-scripts --no-fund/)
   assert.match(yml, /controlled-model-eval\.mjs --mock/)
   assert.doesNotMatch(yml, /OPENAI_API_KEY/)
 })
