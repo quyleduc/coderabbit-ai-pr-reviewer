@@ -10,11 +10,33 @@ import {
 import {processStructuredReview} from '../src/review-protocol.ts'
 import {requestLlmText} from '../src/llm-adapters.ts'
 import {resolveLlmConnection} from '../src/llm-provider.ts'
+import {canonicalizeRuleId} from '../src/rule-catalog.ts'
 
 const FIXTURES_URL = new URL(
   '../tests/fixtures/embedded-c-review.json',
   import.meta.url
 )
+
+export const LIVE_EVAL_THRESHOLDS = Object.freeze({
+  precision: 1,
+  recall: 1,
+  f1: 1
+})
+
+export function evaluateQualityGate(metrics) {
+  const failedMetrics = Object.entries(LIVE_EVAL_THRESHOLDS)
+    .filter(([name, minimum]) =>
+      typeof metrics?.[name] !== 'number' ||
+      !Number.isFinite(metrics[name]) ||
+      metrics[name] < minimum
+    )
+    .map(([name]) => name)
+  return {
+    passed: failedMetrics.length === 0,
+    thresholds: LIVE_EVAL_THRESHOLDS,
+    failedMetrics
+  }
+}
 
 /**
  * Strict benchmark matching: each expected (line, rule_id) can match once.
@@ -87,6 +109,7 @@ export async function runEvaluationSuite(fixtures, generate) {
   }
   const seenIds = new Set()
   const totals = {tp: 0, fp: 0, fn: 0}
+  const caseResults = []
   for (const fixture of fixtures) {
     if (
       typeof fixture?.id !== 'string' ||
@@ -115,10 +138,19 @@ export async function runEvaluationSuite(fixtures, generate) {
         comment.message
       )
       if (!rule) throw new Error('Invalid normalized review finding')
-      return {line: comment.startLine, rule_id: rule[1]}
+      return {
+        line: comment.startLine,
+        rule_id: canonicalizeRuleId(rule[1])
+      }
     })
     const metrics = scoreFindings(predictions, fixture.expected)
     for (const key of ['tp', 'fp', 'fn']) totals[key] += metrics[key]
+    caseResults.push({
+      id: fixture.id,
+      expected: fixture.expected,
+      predicted: predictions,
+      ...metrics
+    })
   }
   const precision =
     totals.tp + totals.fp === 0
@@ -138,7 +170,8 @@ export async function runEvaluationSuite(fixtures, generate) {
         ? 0
         : (2 * precision * recall) / (precision + recall),
     invalid: 0,
-    writesToGithub: 0
+    writesToGithub: 0,
+    caseResults
   }
 }
 
@@ -397,17 +430,23 @@ async function main() {
         return reply
       }
     )
+    const qualityGate = evaluateQualityGate(result)
     // Never print source, prompt, model output, or API credentials.
     console.log(
       JSON.stringify(
         {
           mode: mock ? 'mock-labeled-fixtures' : 'live-model-evaluation',
-          ...result
+          ...result,
+          qualityGate
         },
         null,
         2
       )
     )
+    if (!mock && !qualityGate.passed) {
+      console.error('Live model evaluation did not meet quality thresholds')
+      process.exitCode = 1
+    }
   } catch (error) {
     console.error(
       'Controlled model evaluation failed: ' +

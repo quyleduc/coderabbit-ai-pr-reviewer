@@ -60,6 +60,20 @@ test('strict schema rejects unknown properties, invalid severity, negative line 
   assert.throws(() => processStructuredReview(response([clean, {...issue, findings: [{...issue.findings[0], message: 'x'.repeat(3000)}]}]), index, patch, 2), /message/i)
 })
 
+test('review protocol preserves syntactically valid custom rule ids for compatibility', () => {
+  const nonCanonical = {
+    ...issue,
+    findings: [{...issue.findings[0], rule_id: 'NULL_POINTER_DEREFERENCE'}]
+  }
+  const result = processStructuredReview(
+    response([clean, nonCanonical]),
+    index,
+    patch,
+    2
+  )
+  assert.match(result.comments[0].message, /NULL_POINTER_DEREFERENCE/)
+})
+
 test('accept one JSON code fence but reject extra untrusted prose and invalid JSON', () => {
   const json = response([clean, issue])
   const fenced = [String.fromCharCode(96, 96, 96) + 'json', json, String.fromCharCode(96, 96, 96)].join('\n')

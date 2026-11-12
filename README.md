@@ -122,6 +122,9 @@ For FreeModel, set `llm_provider: freemodel`, add the GitHub secret
 OpenAI Chat Completions at `https://freemodel.in/v1`; no API gateway code or
 model-specific branches are needed in the review logic.
 
+The opt-in, read-only live benchmark and its quality gate are documented in
+[Controlled live evaluation](./docs/CONTROLLED_LIVE_EVALUATION.md).
+
 ### Models: `gpt-4` and `gpt-3.5-turbo`
 
 Recommend using `gpt-3.5-turbo` for lighter tasks such as summarizing the

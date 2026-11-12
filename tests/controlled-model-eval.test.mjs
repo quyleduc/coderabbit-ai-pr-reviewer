@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {readFileSync} from 'node:fs'
-import {runEvaluationSuite, scoreFindings, requestModelResponse, buildFixturePrompt} from '../scripts/controlled-model-eval.mjs'
+import {runEvaluationSuite, scoreFindings, requestModelResponse, buildFixturePrompt, evaluateQualityGate} from '../scripts/controlled-model-eval.mjs'
+import {canonicalizeRuleId} from '../src/rule-catalog.ts'
 
 const truth = [{line: 5, rule_id: 'NULL_DEREF'}, {line: 10, rule_id: 'DIV_ZERO'}]
 
@@ -19,10 +20,18 @@ test('empty prediction has no false positives but misses known defects', () => {
   assert.deepEqual(scoreFindings([], []), {tp: 0, fp: 0, fn: 0})
 })
 
+test('canonicalizes common model rule aliases and safely marks unknown IDs', () => {
+  assert.equal(canonicalizeRuleId('NULL_POINTER_DEREFERENCE'), 'NULL_DEREF')
+  assert.equal(canonicalizeRuleId('DIVISION_BY_ZERO'), 'DIV_ZERO')
+  assert.equal(canonicalizeRuleId('MADE_UP_RULE'), 'NON_CANONICAL')
+})
+
 test('benchmark uses actual production prompt template with named hunk IDs', () => {
   const fixture = {id:'case-1', patch: '@@ -1 +1 @@\n-return value;\n+return *ptr;\n', title: 'Test', description: 'test'}
   const prompt = buildFixturePrompt(fixture)
   assert.match(prompt, /Strict review protocol \(version 1\)/)
+  assert.match(prompt, /NULL_DEREF/)
+  assert.match(prompt, /OTHER_DEFECT/)
   assert.match(prompt, /---review_hunk id=h0---/)
   assert.match(prompt, /return \*ptr;/)
   assert.doesNotMatch(prompt, /\$patches/)
@@ -105,10 +114,14 @@ test('no API secret means zero outgoing HTTP requests', async () => {
 
 test('bench fixtures contain both positive and clean embedded C examples', () => {
   const entries=JSON.parse(readFileSync(new URL('./fixtures/embedded-c-review.json',import.meta.url),'utf8'))
-  assert.ok(entries.length>=3)
-  assert.ok(entries.some(x=>x.expected.length===0))
+  assert.ok(entries.length>=6)
+  assert.ok(entries.filter(x=>x.expected.length===0).length>=2)
   assert.ok(entries.some(x=>x.expected.some(y=>y.rule_id==='DIV_ZERO')))
   assert.ok(entries.some(x=>x.expected.some(y=>y.rule_id==='NULL_DEREF')))
+  const realPr=entries.find(x=>x.id==='littlefs-pr-966-fix')
+  assert.equal(realPr.expected.length,0)
+  assert.equal(realPr.provenance.url,'https://github.com/littlefs-project/littlefs/pull/966')
+  assert.match(realPr.patch,/% lfs->cfg->block_count\);\n\+\s+% lfs->block_count\);/)
 })
 
 
@@ -117,6 +130,24 @@ test('checked-in entire embedded C fixture suite runs source validation and exac
   const summary=await runEvaluationSuite(fixtures, async input => JSON.stringify(input.mock_response))
   assert.deepEqual(
     {cases:summary.cases,tp:summary.tp,fp:summary.fp,fn:summary.fn,invalid:summary.invalid},
-    {cases:4,tp:3,fp:0,fn:0,invalid:0}
+    {cases:6,tp:4,fp:0,fn:0,invalid:0}
   )
+  assert.deepEqual(summary.caseResults.map(({id,tp,fp,fn})=>({id,tp,fp,fn})),[
+    {id:'null-deref',tp:1,fp:0,fn:0},
+    {id:'zero-divide',tp:1,fp:0,fn:0},
+    {id:'off-by-one',tp:1,fp:0,fn:0},
+    {id:'semantic-noop',tp:0,fp:0,fn:0},
+    {id:'unbounded-copy',tp:1,fp:0,fn:0},
+    {id:'littlefs-pr-966-fix',tp:0,fp:0,fn:0}
+  ])
+  assert.equal(evaluateQualityGate(summary).passed,true)
+})
+
+test('quality gate rejects a completed benchmark with poor finding accuracy', () => {
+  const result=evaluateQualityGate({precision:0,recall:0,f1:0})
+  assert.equal(result.passed,false)
+  assert.deepEqual(result.failedMetrics,['precision','recall','f1'])
+  const nonFinite=evaluateQualityGate({precision:NaN,recall:1,f1:1})
+  assert.equal(nonFinite.passed,false)
+  assert.deepEqual(nonFinite.failedMetrics,['precision'])
 })

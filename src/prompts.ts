@@ -1,4 +1,8 @@
 import type {Inputs} from './inputs'
+// eslint-disable-next-line import/extensions
+import {renderReviewRuleCatalog} from './rule-catalog.ts'
+
+const reviewRuleCatalog = renderReviewRuleCatalog()
 
 export class Prompts {
   summarize: string
@@ -131,7 +135,11 @@ Rules:
 - Finding line is a NEW-side ADDED (+) line within the SAME hunk.
 - "evidence" is the entire source text of that added line, excluding the
   plus-sign, line-number prefix and surrounding whitespace. Copy it exactly.
-- "rule_id" is an uppercase underscore-separated identifier.
+- Prefer exactly one ID from this canonical defect taxonomy:
+${reviewRuleCatalog}
+- Choose the most specific applicable ID. Use OTHER_DEFECT only when none of
+  the listed categories fits a concrete, source-supported defect. Never invent
+  an ID or report an issue merely to fill a category.
 - "severity" is exactly "low", "medium" or "high".
 - "message" must identify a concrete actionable defect, in plain language.
 - Do not invent a finding for context-only or deleted lines.
