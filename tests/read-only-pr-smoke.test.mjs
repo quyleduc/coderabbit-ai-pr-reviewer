@@ -111,6 +111,26 @@ test('root npm lockfile with omitted GitHub patch is explicitly excluded but acc
   assert.equal(result.realGitHubMutations, 0)
 })
 
+test('packaged action bundle artifacts with missing binary patches are explicitly excluded and counted', async () => {
+  const result = await smokeReadOnlyPullRequest({
+    expectedHead: 'a'.repeat(40),
+    expectedFileCount: 3,
+    fetchHead: async () => 'a'.repeat(40),
+    fetchPage: async () => [
+      {filename: 'src/driver.c', patch: diff, additions: 2, deletions: 2},
+      {filename: 'dist/index.js', status: 'modified', additions: 0, deletions: 0},
+      {filename: 'dist/licenses.txt', status: 'modified', additions: 0, deletions: 0}
+    ]
+  })
+  assert.equal(result.retrievedFiles, 3)
+  assert.equal(result.reviewedFiles, 1)
+  assert.deepEqual(result.ignoredGeneratedFiles, [
+    'dist/index.js',
+    'dist/licenses.txt'
+  ])
+  assert.equal(result.realGitHubMutations, 0)
+})
+
 test('unreviewable source patch still blocks success even alongside an explicit lockfile exclusion', async () => {
   await assert.rejects(smokeReadOnlyPullRequest({
     expectedHead: 'a'.repeat(40), expectedFileCount: 2,
@@ -122,8 +142,13 @@ test('unreviewable source patch still blocks success even alongside an explicit 
   }), /missing|usable|patch/i)
 })
 
-test('only root package-lock.json is excluded, not arbitrary nested or similarly named files', async () => {
-  for (const filename of ['src/package-lock.json', 'package-lock.json.bak', 'npm-shrinkwrap.json']) {
+test('only exact generated paths are excluded, not arbitrary nested or similarly named files', async () => {
+  for (const filename of [
+    'src/package-lock.json',
+    'package-lock.json.bak',
+    'npm-shrinkwrap.json',
+    'dist/custom-source.js'
+  ]) {
     await assert.rejects(smokeReadOnlyPullRequest({
       expectedHead: 'a'.repeat(40), expectedFileCount: 1,
       fetchHead: async () => 'a'.repeat(40),

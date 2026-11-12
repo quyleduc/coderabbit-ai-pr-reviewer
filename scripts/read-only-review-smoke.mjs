@@ -38,12 +38,19 @@ export async function smokeReadOnlyPullRequest({
   )
 
   // PR metadata must account for all files. GitHub may omit generated
-  // lockfile patches; explicitly exclude only the root npm lockfile, also
-  // ignored by production's default JSON path filter. Source omissions fail.
+  // lockfile and packaged-action patches; explicitly exclude only the root
+  // npm lockfile and the two generated bundle artifacts. Source omissions fail.
+  const generatedArtifacts = new Set([
+    'package-lock.json',
+    'dist/index.js',
+    'dist/licenses.txt'
+  ])
   const ignoredGeneratedFiles = files
-    .filter(file => file.filename === 'package-lock.json')
+    .filter(file => generatedArtifacts.has(file.filename))
     .map(file => file.filename)
-  const eligibleFiles = files.filter(file => file.filename !== 'package-lock.json')
+  const eligibleFiles = files.filter(
+    file => !generatedArtifacts.has(file.filename)
+  )
   if (eligibleFiles.length === 0) {
     throw new Error('Smoke has no eligible non-generated source files')
   }
@@ -216,7 +223,7 @@ async function main() {
       '\n**Result:** ' + result.status +
       '\n\n**Files fetched:** ' + result.retrievedFiles +
       '\n\n**Files audited:** ' + result.reviewedFiles +
-      '\n\n**Generated lockfiles excluded:** ' + result.ignoredGeneratedFiles.length +
+      '\n\n**Generated artifacts excluded:** ' + result.ignoredGeneratedFiles.length +
       '\n\n**Hunks checked:** ' + result.reviewedHunks +
       '\n\n**Synthetic findings:** ' + result.syntheticFindings +
       '\n\n**Actual GitHub writes:** 0\n' +
