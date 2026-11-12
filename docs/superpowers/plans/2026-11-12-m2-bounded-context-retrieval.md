@@ -25,7 +25,7 @@
 ## Review Focus
 
 - Stale head or mismatched variant: reject the fact and produce a hunk-only result; pin in Task 1.
-- Unsafe path, malformed SHA, invalid range, unknown relation/status, or excerpt/range mismatch: reject the fact without throwing through review; pin in Task 1.
+- Unsafe path, malformed SHA, invalid range, unknown relation/status, or excerpt/range mismatch: reject the entire provider result with a stable reason and fall back to hunk-only review; pin in Task 1.
 - PARTIAL/UNKNOWN/UNSUPPORTED/UNMATCHED facts: label them as uncertain and never treat them as validated defect evidence; pin in Tasks 1 and 2.
 - Candidate sets at file/snippet/byte/token boundaries: deterministic ordering, stop reason, and no silent truncation; pin in Task 1.
 - Missing, failing, or non-cooperative provider: report a stable unavailable reason and continue hunk-only; pin in Tasks 1 and 2.
@@ -46,7 +46,7 @@
 
 - [ ] **Step 1: Write failing contract and ranking tests**
 
-In `tests/review-context.test.mjs`, add behavior tests for valid candidate selection and stable tie-breaking; exact head/variant checks; malformed path/SHA/range/relation/status and excerpt-length rejection; duplicate elimination; deterministic file/snippet/byte/token caps; uncertain status labeling; absent provider; provider error; and timeout. Assert each result contains stable reason codes and never throws on provider failures.
+In `tests/review-context.test.mjs`, add behavior tests for valid candidate selection and stable tie-breaking; exact head/variant checks; malformed path/SHA/range/relation/status and excerpt-length rejection; duplicate elimination; deterministic file/snippet/byte/token caps; uncertain status labeling; absent provider; provider error; timeout; and whole-result fallback when any identity or structure check fails. Assert that a single oversized snippet yields no context, while candidate-count caps retain a deterministic bounded prefix and record omitted-candidate reasons. Assert each result contains stable reason codes and never throws on provider failures.
 
 - [ ] **Step 2: Run the new tests and confirm they fail for missing behavior**
 
@@ -55,7 +55,7 @@ Expected: failures because `review-context.ts` does not yet export the contract 
 
 - [ ] **Step 3: Implement the minimal provider contract and selector in `src/review-context.ts`**
 
-Validate candidate fields before selection. Accept only exact request head and variant; reject unsafe paths, non-40-character lowercase Git blob/SHA values, invalid line bounds, unsupported relation/status values, and excerpt line-count mismatches. Rank by the documented relation priority, then graph distance, path, symbol ID, and line. Deduplicate by path/range/symbol/relation/variant. Enforce the five approved limits without truncating a snippet. Catch provider exceptions and timeout, abort the request signal, and return a stable unavailable status.
+Validate the complete provider response before selection. Any stale head, variant mismatch, malformed candidate, unsafe path, invalid line bounds, unsupported relation/status, or excerpt line-count mismatch returns an empty context result with a stable reason. Rank by graph distance, then the fixed relation order CALLS, READS, WRITES, EXPANDS_MACRO, INCLUDES, ALIASES, then path, symbol ID, and line. Deduplicate by path/range/symbol/relation/variant. Enforce all five approved limits without truncating a snippet: a single snippet too large for the byte/token cap returns no context; when only aggregate file/snippet caps omit lower-ranked candidates, return a bounded deterministic prefix with an explicit omission reason. Catch provider exceptions and timeout, abort the request signal, and return a stable unavailable status.
 
 - [ ] **Step 4: Re-run the new tests and confirm they pass**
 
