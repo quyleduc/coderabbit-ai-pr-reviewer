@@ -92,7 +92,10 @@ async function main() {
     findings: [],
     incompleteReasons: []
   }
-  if (eligible.length > MAX_FILES) {
+  if (eligible.length === 0) {
+    result.status = 'inconclusive'
+    result.incompleteReasons.push('no_eligible_files')
+  } else if (eligible.length > MAX_FILES) {
     result.status = 'inconclusive'
     result.incompleteReasons.push('file_limit_exceeded')
   } else {
@@ -150,8 +153,10 @@ async function main() {
         }
         if (result.incompleteReasons.includes('finding_limit')) break
       } catch (error) {
-        const code = error instanceof Error && error.message === 'github_rate_limit'
-          ? 'provider_or_github_rate_limit'
+        const code = error instanceof Error && /HTTP 429/.test(error.message)
+          ? 'provider_rate_limit'
+          : error instanceof Error && error.message === 'github_rate_limit'
+          ? 'github_rate_limit'
           : error instanceof Error && error.message === 'stale_pr'
           ? 'stale_pr'
           : 'file_or_model_validation_failed'
