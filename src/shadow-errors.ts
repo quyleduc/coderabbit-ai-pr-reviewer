@@ -11,8 +11,7 @@ export function classifyShadowFailure(error: unknown): string {
   const http = /^(?:LLM|OpenAI) HTTP (\d{3})$/.exec(message)
   if (http) {
     if (http[1] === '429') return 'provider_rate_limit'
-    if (http[1].startsWith('5')) return 'provider_http_server_error'
-    return 'provider_http_client_error'
+    return 'provider_http_' + http[1]
   }
 
   if (/request failed after configured retries$/i.test(message)) {
