@@ -6,6 +6,7 @@ import {processStructuredReview} from '../src/review-protocol.ts'
 import {loadCompletePullRequestFiles, verifyPullRequestPatch} from '../src/pr-files.ts'
 import {resolveLlmConnection} from '../src/llm-provider.ts'
 import {requestLlmText} from '../src/llm-adapters.ts'
+import {classifyShadowFailure} from '../src/shadow-errors.ts'
 
 const MAX_FILES = 20
 const MAX_HUNKS = 100
@@ -155,14 +156,7 @@ async function main() {
         }
         if (result.incompleteReasons.includes('finding_limit')) break
       } catch (error) {
-        const code = error instanceof Error && /HTTP 429/.test(error.message)
-          ? 'provider_rate_limit'
-          : error instanceof Error && error.message === 'github_rate_limit'
-          ? 'github_rate_limit'
-          : error instanceof Error && error.message === 'stale_pr'
-          ? 'stale_pr'
-          : 'file_or_model_validation_failed'
-        result.incompleteReasons.push(code)
+        result.incompleteReasons.push(classifyShadowFailure(error))
         break
       }
     }
