@@ -1,0 +1,68 @@
+name: PR Review Shadow
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Same-repository pull request number
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+concurrency:
+  group: shadow-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  shadow:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        github.event.pull_request.number != 17 &&
+        (
+          (vars.ENABLE_SHADOW_REVIEW == 'true' &&
+            (github.event.action == 'opened' ||
+             github.event.action == 'synchronize' ||
+             github.event.action == 'reopened')) ||
+          (github.event.action == 'labeled' &&
+            github.event.label.name == 'coderabbit-model-only')
+        )
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Run read-only shadow evaluation
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          SHADOW_PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+          LLM_PROVIDER: freemodel
+          LLM_API_PROTOCOL: auto
+          LLM_MODEL: glm-5.3-flash
+          FREEMODEL_API_KEY: ${{ secrets.FREEMODEL_API_KEY }}
+        run: node --experimental-strip-types scripts/live-pr-shadow.mjs
+      - name: Save validated shadow report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-review-shadow-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}-${{ github.run_id }}
+          path: shadow-report.json
+          if-no-files-found: warn
+          retention-days: 14
