@@ -65,7 +65,9 @@ async function main() {
 
   const prPath = '/repos/' + repository + '/pulls/' + number
   const initial = await api(prPath)
-  if (initial.state !== 'open' || initial.base?.ref !== 'main' ||
+  const allowClosed = env.SHADOW_ALLOW_CLOSED === 'true'
+  if ((initial.state !== 'open' && !(allowClosed && initial.state === 'closed')) ||
+      initial.base?.ref !== 'main' ||
       initial.head?.repo?.full_name !== repository ||
       initial.base?.repo?.full_name !== repository) {
     throw new Error('scope')
