@@ -1,4 +1,4 @@
-name: Controlled live PR acceptance (manual)
+name: Controlled live PR acceptance
 
 on:
   workflow_dispatch:
@@ -67,23 +67,40 @@ on:
           PUBLISH_ACCEPTANCE_REVIEW'
         type: string
         required: true
+  # This label path runs from the base branch and never checks out PR code.
+  pull_request_target:
+    branches: [main]
+    types: [labeled]
 
 permissions:
   contents: read
 
 concurrency:
-  group: acceptance-${{ github.repository }}-${{ inputs.pr_number }}
+  group: acceptance-${{ github.repository }}-${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   preflight:
     if: >-
-      github.ref == 'refs/heads/main' && ((inputs.mode == 'preflight' &&
-      inputs.confirm == 'PREFLIGHT_ACCEPTANCE_ONLY') ||
-       (inputs.mode == 'model-only' && inputs.confirm ==
-      'VALIDATE_ACCEPTANCE_MODEL') ||
-       (inputs.mode == 'publish' && inputs.confirm ==
-      'PUBLISH_ACCEPTANCE_REVIEW'))
+      github.ref == 'refs/heads/main' &&
+      (
+        (github.event_name == 'workflow_dispatch' &&
+          ((inputs.mode == 'preflight' &&
+            inputs.confirm == 'PREFLIGHT_ACCEPTANCE_ONLY') ||
+           (inputs.mode == 'model-only' &&
+            inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL') ||
+           (inputs.mode == 'publish' &&
+            inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW')))
+        ||
+        (github.event_name == 'pull_request_target' &&
+          github.event.action == 'labeled' &&
+          github.event.label.name == 'coderabbit-model-only' &&
+          github.event.pull_request.number == 17 &&
+          github.event.pull_request.draft == true &&
+          github.event.pull_request.head.ref == 'acceptance/m1-gemma-free-null-deref' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          contains(github.event.pull_request.body, '<!-- coderabbit:acceptance-target-v1 -->'))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -104,19 +121,29 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           ACCEPTANCE_DEFAULT_BRANCH:
             ${{ github.event.repository.default_branch }}
-          ACCEPTANCE_PR: ${{ inputs.pr_number }}
-          ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
-          ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
-          ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
-          ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
+          ACCEPTANCE_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+          ACCEPTANCE_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head_sha || github.event.pull_request.head.sha }}
+          ACCEPTANCE_BASE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_base_sha || github.event.pull_request.base.sha }}
+          ACCEPTANCE_EXPECTED_RULE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_rule || 'NULL_DEREF' }}
+          ACCEPTANCE_EXPECTED_LINE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_line || 2 }}
         run:
           node --experimental-strip-types scripts/live-pr-acceptance.mjs
           --preflight
 
   model_only:
-    if:
-      inputs.mode == 'model-only' && inputs.confirm ==
-      'VALIDATE_ACCEPTANCE_MODEL'
+    if: >-
+      (github.event_name == 'workflow_dispatch' &&
+        inputs.mode == 'model-only' &&
+        inputs.confirm == 'VALIDATE_ACCEPTANCE_MODEL')
+      ||
+      (github.event_name == 'pull_request_target' &&
+        github.event.action == 'labeled' &&
+        github.event.label.name == 'coderabbit-model-only' &&
+        github.event.pull_request.number == 17 &&
+        github.event.pull_request.draft == true &&
+        github.event.pull_request.head.ref == 'acceptance/m1-gemma-free-null-deref' &&
+        github.event.pull_request.head.repo.full_name == github.repository &&
+        contains(github.event.pull_request.body, '<!-- coderabbit:acceptance-target-v1 -->'))
     needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -136,9 +163,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          LLM_PROVIDER: ${{ inputs.provider }}
-          LLM_API_PROTOCOL: ${{ inputs.protocol }}
-          LLM_BASE_URL: ${{ inputs.base_url }}
+          LLM_PROVIDER: ${{ github.event_name == 'workflow_dispatch' && inputs.provider || 'freemodel' }}
+          LLM_API_PROTOCOL: ${{ github.event_name == 'workflow_dispatch' && inputs.protocol || 'auto' }}
+          LLM_BASE_URL: ${{ github.event_name == 'workflow_dispatch' && inputs.base_url || '' }}
           LLM_API_KEY:
             ${{ inputs.provider == 'openai-compatible' && secrets.LLM_API_KEY ||
             '' }}
@@ -148,28 +175,30 @@ jobs:
             ${{ inputs.provider == 'openrouter' && secrets.OPENROUTER_API_KEY ||
             '' }}
           FREEMODEL_API_KEY:
-            ${{ inputs.provider == 'freemodel' && secrets.FREEMODEL_API_KEY ||
-            '' }}
+            ${{ ((github.event_name == 'workflow_dispatch' && inputs.provider == 'freemodel') || github.event_name == 'pull_request_target') && secrets.FREEMODEL_API_KEY || '' }}
           ANTHROPIC_API_KEY:
             ${{ inputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY ||
             '' }}
           GEMINI_API_KEY:
             ${{ inputs.provider == 'gemini' && secrets.GEMINI_API_KEY || '' }}
-          LLM_MODEL: ${{ inputs.model }}
+          LLM_MODEL: ${{ github.event_name == 'workflow_dispatch' && inputs.model || 'glm-5.3-flash' }}
           ACCEPTANCE_DEFAULT_BRANCH:
             ${{ github.event.repository.default_branch }}
-          ACCEPTANCE_PR: ${{ inputs.pr_number }}
-          ACCEPTANCE_HEAD: ${{ inputs.expected_head_sha }}
-          ACCEPTANCE_BASE: ${{ inputs.expected_base_sha }}
-          ACCEPTANCE_EXPECTED_RULE: ${{ inputs.expected_rule }}
-          ACCEPTANCE_EXPECTED_LINE: ${{ inputs.expected_line }}
+          ACCEPTANCE_PR: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+          ACCEPTANCE_HEAD: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_head_sha || github.event.pull_request.head.sha }}
+          ACCEPTANCE_BASE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_base_sha || github.event.pull_request.base.sha }}
+          ACCEPTANCE_EXPECTED_RULE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_rule || 'NULL_DEREF' }}
+          ACCEPTANCE_EXPECTED_LINE: ${{ github.event_name == 'workflow_dispatch' && inputs.expected_line || 2 }}
         run:
           node --experimental-strip-types scripts/live-pr-acceptance.mjs
           --model-only
 
   publish:
-    if:
-      inputs.mode == 'publish' && inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.mode == 'publish' &&
+      inputs.confirm == 'PUBLISH_ACCEPTANCE_REVIEW'
     needs: preflight
     environment: controlled-review-acceptance
     runs-on: ubuntu-latest
