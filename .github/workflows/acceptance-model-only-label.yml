@@ -1,0 +1,91 @@
+name: Controlled acceptance model-only (label)
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [labeled]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: acceptance-label-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'coderabbit-model-only' &&
+      github.event.pull_request.number == 17 &&
+      github.event.pull_request.draft == true &&
+      github.event.pull_request.head.ref == 'acceptance/m1-gemma-free-null-deref' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.body, '<!-- coderabbit:acceptance-target-v1 -->')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate exact acceptance scope (read-only)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_PR: ${{ github.event.pull_request.number }}
+          ACCEPTANCE_HEAD: ${{ github.event.pull_request.head.sha }}
+          ACCEPTANCE_BASE: ${{ github.event.pull_request.base.sha }}
+          ACCEPTANCE_EXPECTED_RULE: NULL_DEREF
+          ACCEPTANCE_EXPECTED_LINE: 2
+        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --preflight
+
+  model_only:
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      github.event.action == 'labeled' &&
+      github.event.label.name == 'coderabbit-model-only' &&
+      github.event.pull_request.number == 17 &&
+      github.event.pull_request.draft == true &&
+      github.event.pull_request.head.ref == 'acceptance/m1-gemma-free-null-deref' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.body, '<!-- coderabbit:acceptance-target-v1 -->')
+    needs: preflight
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate known defect with model (no GitHub writes)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          LLM_PROVIDER: freemodel
+          LLM_API_PROTOCOL: auto
+          FREEMODEL_API_KEY: ${{ secrets.FREEMODEL_API_KEY }}
+          LLM_MODEL: glm-5.3-flash
+          ACCEPTANCE_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          ACCEPTANCE_PR: ${{ github.event.pull_request.number }}
+          ACCEPTANCE_HEAD: ${{ github.event.pull_request.head.sha }}
+          ACCEPTANCE_BASE: ${{ github.event.pull_request.base.sha }}
+          ACCEPTANCE_EXPECTED_RULE: NULL_DEREF
+          ACCEPTANCE_EXPECTED_LINE: 2
+        run: node --experimental-strip-types scripts/live-pr-acceptance.mjs --model-only
