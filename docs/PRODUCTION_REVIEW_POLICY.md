@@ -10,7 +10,7 @@
 
 - Analyze source changes only. Skip generated bundles, lockfiles, vendored dependencies, binaries, and files without a complete text patch.
 - Never execute or check out pull-request code in a privileged workflow.
-- Limit an evaluation to 100 files, 100 hunks, 64 KiB per patch, and 50 model findings. Exceeding a limit makes the run inconclusive; it must not be reported as a clean review.
+- Limit an evaluation to 20 files, 100 hunks, 64 KiB per patch, and 50 model findings. Exceeding a limit makes the run inconclusive; it must not be reported as a clean review.
 - Every finding must use a canonical rule ID, severity, actionable message, exact evidence from an added line, and an inline location on that same added line.
 - Suppress style-only, speculative, duplicate, or unsupported comments. Cap publishable findings at three per pull request.
 
