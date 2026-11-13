@@ -53,6 +53,7 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           SHADOW_PR_NUMBER: ${{ github.event_name == 'workflow_dispatch' && inputs.pr_number || github.event.pull_request.number }}
+          SHADOW_ALLOW_CLOSED: ${{ github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'coderabbit-model-only' }}
           LLM_PROVIDER: freemodel
           LLM_API_PROTOCOL: auto
           LLM_MODEL: glm-5.3-flash
