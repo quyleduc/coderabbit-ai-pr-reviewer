@@ -5,8 +5,8 @@ import {classifyShadowFailure} from '../src/shadow-errors.ts'
 test('classifies provider and validation failures with bounded codes', () => {
   const cases = [
     ['LLM HTTP 429', 'provider_rate_limit'],
-    ['LLM HTTP 503', 'provider_http_server_error'],
-    ['LLM HTTP 401', 'provider_http_client_error'],
+    ['LLM HTTP 503', 'provider_http_503'],
+    ['LLM HTTP 401', 'provider_http_401'],
     ['LLM request failed after configured retries', 'provider_transport_failed'],
     ['Chat Completions response has no choices', 'provider_missing_choices'],
     ['Chat Completions response exceeded output token budget', 'provider_output_limit'],
