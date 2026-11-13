@@ -233,7 +233,7 @@ export async function requestModelResponse({
         : reasoningEffort,
     maxOutputTokens:
       maxOutputTokens === undefined
-        ? provider === 'openrouter'
+        ? provider === 'openrouter' || provider === 'freemodel'
           ? 8192
           : 3000
         : maxOutputTokens,

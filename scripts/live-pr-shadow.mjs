@@ -129,7 +129,7 @@ async function main() {
           model,
           prompt: buildReviewPrompt(initial, file),
           systemMessage: FIXED_SYSTEM,
-          maxOutputTokens: 3000,
+          maxOutputTokens: 8192,
           timeoutMs: 90000,
           retries: 1,
           retryRateLimits: false
