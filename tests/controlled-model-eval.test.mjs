@@ -96,6 +96,36 @@ test('OpenAI Responses adapter uses POST, returns completed output and disables 
   assert.equal(JSON.parse(observed[0].init.body).store, false)
 })
 
+test('FreeModel reasoning evaluation defaults to the documented 8192 output-token budget', async () => {
+  let requestBody
+  await requestModelResponse({
+    prompt: 'Review one changed hunk.',
+    apiKey: 'test-key',
+    model: 'glm-5.3-flash',
+    provider: 'freemodel',
+    fetcher: async (_url, init) => {
+      requestBody = JSON.parse(init.body)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [{
+            finish_reason: 'stop',
+            message: {content: '{"version":1,"hunks":[]}'}
+          }]
+        })
+      }
+    }
+  })
+  assert.equal(requestBody.max_tokens, 8192)
+
+  const shadowScript = readFileSync(
+    new URL('../scripts/live-pr-shadow.mjs', import.meta.url),
+    'utf8'
+  )
+  assert.match(shadowScript, /maxOutputTokens: 8192/)
+})
+
 test('Responses adapter fails closed on HTTP and incomplete outputs without leaking response content', async () => {
   const options={prompt:'hello',apiKey:'private-token',model:'test-model'}
   await assert.rejects(requestModelResponse({...options,fetcher: async()=>({ok:false,status:429})}), /HTTP 429/)
