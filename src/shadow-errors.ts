@@ -18,12 +18,23 @@ export function classifyShadowFailure(error: unknown): string {
   if (/request failed after configured retries$/i.test(message)) {
     return 'provider_transport_failed'
   }
-  if (
-    /^(?:Chat Completions|Anthropic|Gemini) response /.test(message) ||
-    message === 'LLM response contains invalid JSON'
-  ) {
-    return 'provider_response_invalid'
+  const providerResponseCodes: Record<string, string> = {
+    'Chat Completions response has no choices': 'provider_missing_choices',
+    'Chat Completions response exceeded output token budget': 'provider_output_limit',
+    'Chat Completions response did not finish with text': 'provider_incomplete_response',
+    'Chat Completions response is empty': 'provider_empty_output',
+    'Anthropic response exceeded output token budget': 'provider_output_limit',
+    'Anthropic response did not finish with text': 'provider_incomplete_response',
+    'Anthropic response has no content': 'provider_missing_content',
+    'Anthropic response is empty': 'provider_empty_output',
+    'Gemini response has no candidates': 'provider_missing_candidates',
+    'Gemini response exceeded output token budget': 'provider_output_limit',
+    'Gemini response was blocked or did not finish': 'provider_incomplete_response',
+    'Gemini response has no content': 'provider_missing_content',
+    'Gemini response is empty': 'provider_empty_output',
+    'LLM response contains invalid JSON': 'provider_invalid_json_envelope'
   }
+  if (providerResponseCodes[message]) return providerResponseCodes[message]
 
   if (
     message === 'invalid_diff' ||
