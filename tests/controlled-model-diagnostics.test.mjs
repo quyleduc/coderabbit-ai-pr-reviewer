@@ -57,7 +57,7 @@ test('review protocol error reports stage but never leaks model output, prompt o
   const result = sanitize(hostile, 'review_validation')
   assert.equal(result.reason, 'REVIEW_PROTOCOL_REJECTED')
   assert.equal(result.stage, 'review_validation')
-  assert.ok(!JSON.stringify(result).includes(hostile))
+  assert.ok(!JSON.stringify(result).includes('sk-or-v1-private'))
 })
 
 test('unknown errors are not echoed, stage and fixture index are strictly bounded', () => {
