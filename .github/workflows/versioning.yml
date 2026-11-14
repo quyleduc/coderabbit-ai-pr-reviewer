@@ -1,5 +1,8 @@
 name: Tag latest
 
+permissions:
+  contents: write
+
 on:
   release:
     types: [published, edited]
@@ -8,6 +11,6 @@ jobs:
   actions-tagger:
     runs-on: windows-latest
     steps:
-      - uses: Actions-R-Us/actions-tagger@latest
+      - uses: Actions-R-Us/actions-tagger@330ddfac760021349fef7ff62b372f2f691c20fb # latest
         with:
           publish_latest_tag: true

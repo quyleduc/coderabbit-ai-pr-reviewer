@@ -50,7 +50,7 @@ async function run(): Promise<void> {
       options,
       new OpenAIOptions(options.openaiLightModel, options.lightTokenLimits)
     )
-  } catch (e: any) {
+  } catch {
     setFailed(
       'Unable to create summary bot: verify provider credentials and model configuration'
     )
@@ -63,7 +63,7 @@ async function run(): Promise<void> {
       options,
       new OpenAIOptions(options.openaiHeavyModel, options.heavyTokenLimits)
     )
-  } catch (e: any) {
+  } catch {
     setFailed(
       'Unable to create review bot: verify provider credentials and model configuration'
     )

@@ -41,6 +41,48 @@ const repo = context.repo
 
 const ignoreKeyword = '@coderabbitai: ignore'
 const REVIEW_COMPLETE_TAG = '<!-- coderabbit:review-complete-v1 -->'
+const MAX_HUNKS_PER_PR = 100
+const MAX_PATCH_BYTES = 64 * 1024
+const MAX_MODEL_FINDINGS = 50
+const MAX_PUBLISHABLE_FINDINGS = 3
+const SUMMARY_TRUNCATION_NOTICE =
+  '\n\n[Summary truncated to fit model token budget]'
+
+const fitRawSummaryToBudget = (
+  baseInputs: Inputs,
+  // eslint-disable-next-line no-unused-vars
+  renderPrompt: (candidate: Inputs) => string,
+  maxRequestTokens: number
+): Inputs => {
+  const candidate = baseInputs.clone()
+  if (getTokenCount(renderPrompt(candidate)) <= maxRequestTokens) {
+    return candidate
+  }
+  const raw = candidate.rawSummary
+  let low = 0
+  let high = raw.length
+  let best = ''
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2)
+    candidate.rawSummary = `${raw.slice(0, mid)}${SUMMARY_TRUNCATION_NOTICE}`
+    if (getTokenCount(renderPrompt(candidate)) <= maxRequestTokens) {
+      best = candidate.rawSummary
+      low = mid + 1
+    } else {
+      high = mid - 1
+    }
+  }
+  if (best !== '') {
+    candidate.rawSummary = best
+    return candidate
+  }
+  candidate.rawSummary = SUMMARY_TRUNCATION_NOTICE.trim()
+  if (getTokenCount(renderPrompt(candidate)) <= maxRequestTokens) {
+    return candidate
+  }
+  candidate.rawSummary = ''
+  return candidate
+}
 interface ReviewPatch {
   startLine: number
   endLine: number
@@ -100,8 +142,6 @@ export const codeReview = async (
   let existingSummarizeCmtBody = ''
   if (existingSummarizeCmt != null) {
     existingSummarizeCmtBody = existingSummarizeCmt.body
-    inputs.rawSummary = commenter.getRawSummary(existingSummarizeCmtBody)
-    inputs.shortSummary = commenter.getShortSummary(existingSummarizeCmtBody)
     existingCommitIdsBlock = commenter.getReviewedCommitIdsBlock(
       existingSummarizeCmtBody
     )
@@ -146,11 +186,6 @@ export const codeReview = async (
     return
   }
 
-  // Rebuild summaries for the new immutable PR scope. Reusing old model
-  // summaries here could cause incorrect conclusions about untouched files.
-  inputs.rawSummary = ''
-  inputs.shortSummary = ''
-
   let files
   try {
     files = await loadCompletePullRequestFiles(
@@ -173,12 +208,31 @@ export const codeReview = async (
     return
   }
 
+  try {
+    const verifiedPR = await octokit.pulls.get({
+      owner: repo.owner,
+      repo: repo.repo,
+      // eslint-disable-next-line camelcase
+      pull_number: context.payload.pull_request.number
+    })
+    if (
+      verifiedPR.data.head.sha !== context.payload.pull_request.head.sha ||
+      verifiedPR.data.base.sha !== context.payload.pull_request.base.sha
+    ) {
+      setFailed('Cannot acquire complete PR files: stale PR head/base scope')
+      return
+    }
+  } catch {
+    setFailed('Cannot acquire complete PR files: unable to verify PR metadata')
+    return
+  }
+
   // skip files if they are filtered out
   const filterSelectedFiles = []
   const filterIgnoredFiles = []
   for (const file of files) {
     if (!options.checkPath(file.filename)) {
-      info(`skip for excluded path: ${file.filename}`)
+      info('skipping excluded path')
       filterIgnoredFiles.push(file)
     } else {
       filterSelectedFiles.push(file)
@@ -197,24 +251,43 @@ export const codeReview = async (
     return
   }
 
+  const patchableFiles = []
+  for (const file of filterSelectedFiles) {
+    if (typeof file.patch !== 'string' || !file.patch.trim()) {
+      const isPureRename =
+        file.status === 'renamed' &&
+        file.additions === 0 &&
+        file.deletions === 0
+      fileCoverage.set(
+        file.filename,
+        isPureRename ? 'ignored_by_policy' : 'blocked_by_budget'
+      )
+      continue
+    }
+    if (Buffer.byteLength(file.patch, 'utf8') > MAX_PATCH_BYTES) {
+      fileCoverage.set(file.filename, 'blocked_by_budget')
+      continue
+    }
+    patchableFiles.push(file)
+  }
+
   try {
-    for (const file of filterSelectedFiles) verifyPullRequestPatch(file)
+    for (const file of patchableFiles) verifyPullRequestPatch(file)
   } catch (error) {
     setFailed(`Cannot acquire complete PR files: ${String(error)}`)
     return
   }
 
   // find hunks to review
-  const filteredFiles: Array<FileChanges | null> = filterSelectedFiles.map(
-    file => {
-      const fileDiff = file.patch ?? ''
-      const patches: ReviewPatch[] = []
-      for (const patch of splitPatch(file.patch)) {
-        const patchLines = patchStartEndLine(patch)
-        if (patchLines == null) continue
-        const hunks = parsePatch(patch)
-        if (hunks == null) continue
-        const hunksStr = `
+  const filteredFiles: Array<FileChanges | null> = patchableFiles.map(file => {
+    const fileDiff = file.patch ?? ''
+    const patches: ReviewPatch[] = []
+    for (const patch of splitPatch(file.patch)) {
+      const patchLines = patchStartEndLine(patch)
+      if (patchLines == null) continue
+      const hunks = parsePatch(patch)
+      if (hunks == null) continue
+      const hunksStr = `
 ---new_hunk---
 \`\`\`
 ${hunks.newHunk}
@@ -225,20 +298,19 @@ ${hunks.newHunk}
 ${hunks.oldHunk}
 \`\`\`
 `
-        patches.push({
-          startLine: patchLines.newHunk.startLine,
-          endLine: patchLines.newHunk.endLine,
-          promptPatch: hunksStr,
-          sourcePatch: patch
-        })
-      }
-      if (patches.length > 0) {
-        return [file.filename, fileDiff, patches]
-      } else {
-        return null
-      }
+      patches.push({
+        startLine: patchLines.newHunk.startLine,
+        endLine: patchLines.newHunk.endLine,
+        promptPatch: hunksStr,
+        sourcePatch: patch
+      })
     }
-  )
+    if (patches.length > 0) {
+      return [file.filename, fileDiff, patches]
+    } else {
+      return null
+    }
+  })
 
   // Filter out any null results
   const filesAndChanges = filteredFiles.filter(
@@ -299,157 +371,202 @@ ${
   // add in progress status to the summarize comment
   await commenter.comment(`${inProgressSummarizeCmt}`, SUMMARIZE_TAG, 'replace')
 
-  const summariesFailed: string[] = []
-
-  const doSummary = async (
-    filename: string,
-
-    fileDiff: string
-  ): Promise<[string, string, boolean] | null> => {
-    info(`summarize: ${filename}`)
-    const ins = inputs.clone()
-    if (fileDiff.length === 0) {
-      warning(`summarize: file_diff is empty, skip ${filename}`)
-      summariesFailed.push(`${filename} (empty diff)`)
-      return null
-    }
-
-    ins.filename = filename
-    ins.fileDiff = fileDiff
-
-    // render prompt based on inputs so far
-    const summarizePrompt = prompts.renderSummarizeFileDiff(
-      ins,
-      options.reviewSimpleChanges
-    )
-    const tokens = getTokenCount(summarizePrompt)
-
-    if (tokens > options.lightTokenLimits.requestTokens) {
-      info(`summarize: diff tokens exceeds limit, skip ${filename}`)
-      summariesFailed.push(`${filename} (diff tokens exceeds limit)`)
-      return null
-    }
-
-    // summarize content
+  const clearInProgressOnAbort = async (reason: string): Promise<void> => {
     try {
-      const [summarizeResp] = await lightBot.chat(summarizePrompt, {})
-
-      if (summarizeResp === '') {
-        info('summarize: nothing obtained from openai')
-        summariesFailed.push(`${filename} (nothing obtained from openai)`)
-        return null
-      } else {
-        if (options.reviewSimpleChanges === false) {
-          // parse the comment to look for triage classification
-          // Format is : [TRIAGE]: <NEEDS_REVIEW or APPROVED>
-          // if the change needs review return true, else false
-          const triageRegex = /\[TRIAGE\]:\s*(NEEDS_REVIEW|APPROVED)/
-          const triageMatch = summarizeResp.match(triageRegex)
-
-          if (triageMatch != null) {
-            const triage = triageMatch[1]
-            const needsReview = triage === 'NEEDS_REVIEW'
-
-            // remove this line from the comment
-            const summary = summarizeResp.replace(triageRegex, '').trim()
-            info(`filename: ${filename}, triage: ${triage}`)
-            return [filename, summary, needsReview]
-          }
-        }
-        return [filename, summarizeResp, true]
-      }
-    } catch (e: any) {
-      warning('Summarize failed (details withheld)')
-      summariesFailed.push(`${filename} (summarize failed)`)
-      return null
+      const baseBody = commenter
+        .removeInProgressStatus(existingSummarizeCmtBody)
+        .trim()
+      const abortedBody = baseBody
+        ? `${baseBody}\n\n> ${reason}`
+        : `> ${reason}`
+      await commenter.comment(abortedBody, SUMMARIZE_TAG, 'replace')
+    } catch {
+      warning('Failed to clear in-progress status comment (details withheld)')
     }
   }
 
-  const summaryPromises = []
-  const skippedFiles = []
-  for (const [filename, fileDiff] of filesAndChanges) {
-    if (options.maxFiles <= 0 || summaryPromises.length < options.maxFiles) {
+  try {
+    const summariesFailed: string[] = []
+
+    const doSummary = async (
+      filename: string,
+
+      fileDiff: string
+    ): Promise<[string, string, boolean] | null> => {
+      const ins = inputs.clone()
+      if (fileDiff.length === 0) {
+        warning('summarize: file_diff is empty, skipping file')
+        summariesFailed.push(`${filename} (empty diff)`)
+        return null
+      }
+
+      ins.filename = filename
+      ins.fileDiff = fileDiff
+
+      // render prompt based on inputs so far
+      const summarizePrompt = prompts.renderSummarizeFileDiff(
+        ins,
+        options.reviewSimpleChanges
+      )
+      const tokens = getTokenCount(summarizePrompt)
+
+      if (tokens > options.lightTokenLimits.requestTokens) {
+        info('summarize: diff tokens exceeds limit, skipping file')
+        summariesFailed.push(`${filename} (diff tokens exceeds limit)`)
+        return null
+      }
+
+      // summarize content
+      try {
+        const [summarizeResp] = await lightBot.chat(summarizePrompt, {})
+
+        if (summarizeResp === '') {
+          info('summarize: nothing obtained from openai')
+          summariesFailed.push(`${filename} (nothing obtained from openai)`)
+          return null
+        } else {
+          if (options.reviewSimpleChanges === false) {
+            // parse the comment to look for triage classification
+            // Format is : [TRIAGE]: <NEEDS_REVIEW or APPROVED>
+            // if the change needs review return true, else false
+            const triageRegex = /^\s*\[TRIAGE\]:\s*(NEEDS_REVIEW|APPROVED)\s*$/m
+            const triageMatch = summarizeResp.match(triageRegex)
+
+            if (triageMatch != null) {
+              const triage = triageMatch[1]
+              const needsReview = triage === 'NEEDS_REVIEW'
+
+              // remove this line from the comment
+              const summary = summarizeResp.replace(triageRegex, '').trim()
+              info(`triage: ${triage}`)
+              return [filename, summary, needsReview]
+            }
+          }
+          return [filename, summarizeResp, true]
+        }
+      } catch (e: any) {
+        warning('Summarize failed (details withheld)')
+        summariesFailed.push(`${filename} (summarize failed)`)
+        return null
+      }
+    }
+
+    const activeFilesAndChanges =
+      options.maxFiles > 0
+        ? filesAndChanges.slice(0, options.maxFiles)
+        : filesAndChanges
+    const skippedFiles =
+      options.maxFiles > 0
+        ? filesAndChanges.slice(options.maxFiles).map(([filename]) => filename)
+        : []
+    for (const filename of skippedFiles) {
+      fileCoverage.set(filename, 'blocked_by_budget')
+      hunkCoverage.markFile(filename, 'blocked_by_budget')
+    }
+
+    const summaryPromises = []
+    for (const [filename, fileDiff] of activeFilesAndChanges) {
       summaryPromises.push(
         openaiConcurrencyLimit(async () => await doSummary(filename, fileDiff))
       )
-    } else {
-      skippedFiles.push(filename)
     }
-  }
 
-  const summaries = (await Promise.all(summaryPromises)).filter(
-    summary => summary !== null
-  ) as Array<[string, string, boolean]>
-  const summarized = new Set(summaries.map(([filename]) => filename))
-  for (const [filename] of filesAndChanges) {
-    if (!summarized.has(filename)) fileCoverage.set(filename, 'failed_analysis')
-  }
+    const summaries = (await Promise.all(summaryPromises)).filter(
+      summary => summary !== null
+    ) as Array<[string, string, boolean]>
+    const summarized = new Set(summaries.map(([filename]) => filename))
+    for (const [filename] of activeFilesAndChanges) {
+      if (!summarized.has(filename)) {
+        fileCoverage.set(filename, 'failed_analysis')
+        hunkCoverage.markFile(filename, 'failed_analysis')
+      }
+    }
 
-  if (summaries.length > 0) {
-    const batchSize = 10
-    // join summaries into one in the batches of batchSize
-    // and ask the bot to summarize the summaries
-    for (let i = 0; i < summaries.length; i += batchSize) {
-      const summariesBatch = summaries.slice(i, i + batchSize)
-      for (const [filename, summary] of summariesBatch) {
-        inputs.rawSummary += `---
+    if (summaries.length > 0) {
+      const batchSize = 10
+      // join summaries into one in the batches of batchSize
+      // and ask the bot to summarize the summaries
+      for (let i = 0; i < summaries.length; i += batchSize) {
+        const summariesBatch = summaries.slice(i, i + batchSize)
+        for (const [filename, summary] of summariesBatch) {
+          inputs.rawSummary += `---
 ${filename}: ${summary}
 `
+        }
+        const boundedInputs = fitRawSummaryToBudget(
+          inputs,
+          candidate => prompts.renderSummarizeChangesets(candidate),
+          options.heavyTokenLimits.requestTokens
+        )
+        // ask chatgpt to summarize the summaries
+        const [summarizeResp] = await heavyBot.chat(
+          prompts.renderSummarizeChangesets(boundedInputs),
+          {}
+        )
+        if (summarizeResp === '') {
+          throw new Error('Missing consolidated summary response')
+        }
+        inputs.rawSummary = summarizeResp
       }
-      // ask chatgpt to summarize the summaries
-      const [summarizeResp] = await heavyBot.chat(
-        prompts.renderSummarizeChangesets(inputs),
-        {}
-      )
-      if (summarizeResp === '') {
-        throw new Error('Missing consolidated summary response')
-      }
-      inputs.rawSummary = summarizeResp
     }
-  }
 
-  // final summary
-  const [summarizeFinalResponse] = await heavyBot.chat(
-    prompts.renderSummarize(inputs),
-    {}
-  )
-  if (summarizeFinalResponse === '') {
-    throw new Error('Missing final summary response')
-  }
-
-  if (options.disableReleaseNotes === false) {
-    // final release notes
-    const [releaseNotesResponse] = await heavyBot.chat(
-      prompts.renderSummarizeReleaseNotes(inputs),
+    // final summary
+    const finalSummaryInputs = fitRawSummaryToBudget(
+      inputs,
+      candidate => prompts.renderSummarize(candidate),
+      options.heavyTokenLimits.requestTokens
+    )
+    const [summarizeFinalResponse] = await heavyBot.chat(
+      prompts.renderSummarize(finalSummaryInputs),
       {}
     )
-    if (releaseNotesResponse === '') {
-      info('release notes: nothing obtained from openai')
-    } else {
-      let message = '### Summary by CodeRabbit\n\n'
-      message += releaseNotesResponse
-      try {
-        await commenter.updateDescription(
-          context.payload.pull_request.number,
-          message
-        )
-      } catch (e: any) {
-        warning('Release notes update failed (details withheld)')
+    if (summarizeFinalResponse === '') {
+      throw new Error('Missing final summary response')
+    }
+
+    if (options.disableReleaseNotes === false) {
+      // final release notes
+      const releaseNotesInputs = fitRawSummaryToBudget(
+        inputs,
+        candidate => prompts.renderSummarizeReleaseNotes(candidate),
+        options.heavyTokenLimits.requestTokens
+      )
+      const [releaseNotesResponse] = await heavyBot.chat(
+        prompts.renderSummarizeReleaseNotes(releaseNotesInputs),
+        {}
+      )
+      if (releaseNotesResponse === '') {
+        info('release notes: nothing obtained from openai')
+      } else {
+        let message = '### Summary by CodeRabbit\n\n'
+        message += releaseNotesResponse
+        try {
+          await commenter.updateDescription(
+            context.payload.pull_request.number,
+            message
+          )
+        } catch (e: any) {
+          warning('Release notes update failed (details withheld)')
+        }
       }
     }
-  }
 
-  // generate a short summary as well
-  const [summarizeShortResponse] = await heavyBot.chat(
-    prompts.renderSummarizeShort(inputs),
-    {}
-  )
-  if (summarizeShortResponse === '') {
-    throw new Error('Missing short summary response')
-  }
-  inputs.shortSummary = summarizeShortResponse
+    // generate a short summary as well
+    const shortSummaryInputs = fitRawSummaryToBudget(
+      inputs,
+      candidate => prompts.renderSummarizeShort(candidate),
+      options.heavyTokenLimits.requestTokens
+    )
+    const [summarizeShortResponse] = await heavyBot.chat(
+      prompts.renderSummarizeShort(shortSummaryInputs),
+      {}
+    )
+    if (summarizeShortResponse === '') {
+      throw new Error('Missing short summary response')
+    }
+    inputs.shortSummary = summarizeShortResponse
 
-  let summarizeComment = `${summarizeFinalResponse}
+    let summarizeComment = `${summarizeFinalResponse}
 ${RAW_SUMMARY_START_TAG}
 ${inputs.rawSummary}
 ${RAW_SUMMARY_END_TAG}
@@ -469,7 +586,7 @@ If you like this project, please support us by purchasing the [Pro version](http
 </details>
 `
 
-  statusMsg += `
+    statusMsg += `
 ${
   skippedFiles.length > 0
     ? `
@@ -500,268 +617,294 @@ ${
 }
 `
 
-  if (!options.disableReview) {
-    const filesAndChangesReview = filesAndChanges.filter(([filename]) => {
-      const needsReview =
-        summaries.find(
-          ([summaryFilename]) => summaryFilename === filename
-        )?.[2] ?? true
-      return needsReview
-    })
-
-    const reviewsSkipped = filesAndChanges
-      .filter(
-        ([filename]) =>
-          !filesAndChangesReview.some(
-            ([reviewFilename]) => reviewFilename === filename
-          )
+    if (!options.disableReview) {
+      const summaryMap = new Map(
+        summaries.map(([filename, , needsReview]) => [filename, needsReview])
       )
-      .map(([filename]) => filename)
+      const filesAndChangesReview = activeFilesAndChanges.filter(
+        ([filename]) => {
+          if (fileCoverage.get(filename) === 'failed_analysis') return false
+          return summaryMap.get(filename) ?? false
+        }
+      )
 
-    for (const filename of reviewsSkipped) {
-      if (fileCoverage.get(filename) === 'pending') {
-        fileCoverage.set(filename, 'triaged_trivial')
-        hunkCoverage.markFile(filename, 'triaged_trivial')
-      }
-    }
-
-    // A file may be only partially packed when exceeding the model budget.
-    const budgetSkipped = new Set<string>()
-    // failed reviews array
-    const reviewsFailed: string[] = []
-    const contextResults: ReviewContextResult[] = []
-    let lgtmCount = 0
-    let reviewCount = 0
-    const doReview = async (
-      filename: string,
-
-      fileDiff: string,
-      patches: ReviewPatch[]
-    ): Promise<void> => {
-      info(`reviewing ${filename}`)
-      // make a copy of inputs
-      const ins: Inputs = inputs.clone()
-      ins.filename = filename
-      const changedLineIndex = buildChangedLineIndex(fileDiff)
-      const hunkRangesMatch =
-        changedLineIndex.valid &&
-        changedLineIndex.hunks.length === patches.length &&
-        patches.every((patch, index) => {
-          const validatedHunk = changedLineIndex.hunks[index]
-          return (
-            validatedHunk.startLine === patch.startLine &&
-            validatedHunk.endLine === patch.endLine
-          )
-        })
-      if (!hunkRangesMatch) {
-        reviewsFailed.push(`${filename} (invalid or incomplete diff)`)
-        hunkCoverage.markFile(filename, 'failed_analysis')
-        return
-      }
-
-      const contextResult = await retrieveReviewContext(contextProvider, {
-        repositoryId: `${repo.owner}/${repo.repo}`,
-        pullRequestNumber: context.payload.pull_request!.number,
-        baseSha: context.payload.pull_request!.base.sha,
-        headSha: context.payload.pull_request!.head.sha,
-        changedFile: filename,
-        hunks: patches.map(patch => ({
-          startLine: patch.startLine,
-          endLine: patch.endLine,
-          patch: patch.sourcePatch
-        }))
-      })
-      contextResults.push(contextResult)
-      ins.reviewContext = formatReviewContextForPrompt(contextResult)
-
-      // calculate tokens based on inputs so far
-      let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
-      // loop to calculate total patch tokens
-      let patchesToPack = 0
-      for (const [index, patch] of patches.entries()) {
-        const patchTokens = getTokenCount(
-          `---review_hunk id=h${index}---\n${patch.promptPatch}\n---end_change_section---`
+      const reviewsSkipped = activeFilesAndChanges
+        .filter(
+          ([filename]) =>
+            fileCoverage.get(filename) !== 'failed_analysis' &&
+            !filesAndChangesReview.some(
+              ([reviewFilename]) => reviewFilename === filename
+            )
         )
-        if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
-          info(
-            `only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`
-          )
-          break
+        .map(([filename]) => filename)
+
+      for (const filename of reviewsSkipped) {
+        if (fileCoverage.get(filename) === 'pending') {
+          fileCoverage.set(filename, 'triaged_trivial')
+          hunkCoverage.markFile(filename, 'triaged_trivial')
         }
-        tokens += patchTokens
-        patchesToPack += 1
       }
 
-      if (patchesToPack < patches.length) budgetSkipped.add(filename)
-      hunkCoverage.markPacked(filename, patchesToPack)
+      // A file may be only partially packed when exceeding the model budget.
+      const budgetSkipped = new Set<string>()
+      // failed reviews array
+      const reviewsFailed: string[] = []
+      const contextResults: ReviewContextResult[] = []
+      let lgtmCount = 0
+      let reviewCount = 0
+      let modelFindingsCount = 0
+      let publishableFindingsCount = 0
+      let findingCapExceeded = false
+      const fileHunkLimit = new Map<string, number>()
+      const doReview = async (
+        filename: string,
 
-      let patchesPacked = 0
-      for (const patch of patches) {
-        const {startLine, endLine, promptPatch} = patch
-        if (context.payload.pull_request == null) {
-          warning('No pull request found, skipping.')
-          continue
+        fileDiff: string,
+        patches: ReviewPatch[]
+      ): Promise<void> => {
+        const maxHunksForFile = fileHunkLimit.get(filename) ?? patches.length
+        info('reviewing file')
+        // make a copy of inputs
+        const ins: Inputs = inputs.clone()
+        ins.filename = filename
+        const changedLineIndex = buildChangedLineIndex(fileDiff)
+        const hunkRangesMatch =
+          changedLineIndex.valid &&
+          changedLineIndex.hunks.length === patches.length &&
+          patches.every((patch, index) => {
+            const validatedHunk = changedLineIndex.hunks[index]
+            return (
+              validatedHunk.startLine === patch.startLine &&
+              validatedHunk.endLine === patch.endLine
+            )
+          })
+        if (!hunkRangesMatch) {
+          reviewsFailed.push(`${filename} (invalid or incomplete diff)`)
+          hunkCoverage.markFile(filename, 'failed_analysis')
+          return
         }
-        // see if we can pack more patches into this request
-        if (patchesPacked >= patchesToPack) {
-          info(
-            `unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`
-          )
-          if (options.debug) info('Review prompt exceeds token budget')
-          break
-        }
-        patchesPacked += 1
 
-        let commentChain = ''
-        try {
-          const allChains = await commenter.getCommentChainsWithinRange(
-            context.payload.pull_request.number,
-            filename,
-            startLine,
-            endLine,
-            COMMENT_REPLY_TAG
-          )
+        const contextResult = await retrieveReviewContext(contextProvider, {
+          repositoryId: `${repo.owner}/${repo.repo}`,
+          pullRequestNumber: context.payload.pull_request!.number,
+          baseSha: context.payload.pull_request!.base.sha,
+          headSha: context.payload.pull_request!.head.sha,
+          changedFile: filename,
+          hunks: patches.map(patch => {
+            const startLine = Math.max(1, patch.startLine)
+            return {
+              startLine,
+              endLine: Math.max(startLine, patch.endLine),
+              patch: patch.sourcePatch
+            }
+          })
+        })
+        contextResults.push(contextResult)
+        ins.reviewContext = formatReviewContextForPrompt(contextResult)
 
-          if (allChains.length > 0) {
-            info(`Found existing comment chains for ${filename}`)
-            commentChain = allChains
+        // calculate tokens based on inputs so far
+        let tokens = getTokenCount(prompts.renderReviewFileDiff(ins))
+        // loop to calculate total patch tokens
+        let patchesToPack = 0
+        for (const [index, patch] of patches
+          .slice(0, maxHunksForFile)
+          .entries()) {
+          const patchTokens = getTokenCount(
+            `---review_hunk id=h${index}---\n${patch.promptPatch}\n---end_change_section---`
+          )
+          if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
+            info(
+              `only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`
+            )
+            break
           }
-        } catch (e: any) {
-          warning('Failed to retrieve review comment chain (details withheld)')
-        }
-        // try packing comment_chain into this request
-        const commentChainTokens = getTokenCount(commentChain)
-        if (
-          tokens + commentChainTokens >
-          options.heavyTokenLimits.requestTokens
-        ) {
-          commentChain = ''
-        } else {
-          tokens += commentChainTokens
+          tokens += patchTokens
+          patchesToPack += 1
         }
 
-        ins.patches += `
+        if (patchesToPack < patches.length) budgetSkipped.add(filename)
+        hunkCoverage.markPacked(filename, patchesToPack)
+
+        let patchesPacked = 0
+        for (const patch of patches) {
+          const {startLine, endLine, promptPatch} = patch
+          if (context.payload.pull_request == null) {
+            warning('No pull request found, skipping.')
+            continue
+          }
+          // see if we can pack more patches into this request
+          if (patchesPacked >= patchesToPack) {
+            info(
+              `unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`
+            )
+            if (options.debug) info('Review prompt exceeds token budget')
+            break
+          }
+          patchesPacked += 1
+
+          let commentChain = ''
+          try {
+            const allChains = await commenter.getCommentChainsWithinRange(
+              context.payload.pull_request.number,
+              filename,
+              startLine,
+              endLine,
+              COMMENT_REPLY_TAG
+            )
+
+            if (allChains.length > 0) {
+              info('Found existing comment chains for file')
+              commentChain = allChains
+            }
+          } catch (e: any) {
+            warning(
+              'Failed to retrieve review comment chain (details withheld)'
+            )
+          }
+          // try packing comment_chain into this request
+          const commentChainTokens = getTokenCount(commentChain)
+          if (
+            tokens + commentChainTokens >
+            options.heavyTokenLimits.requestTokens
+          ) {
+            commentChain = ''
+          } else {
+            tokens += commentChainTokens
+          }
+
+          ins.patches += `
 ---review_hunk id=h${patchesPacked - 1}---
 ${promptPatch}
 `
-        if (commentChain !== '') {
-          ins.patches += `
+          if (commentChain !== '') {
+            ins.patches += `
 ---comment_chains---
 \`\`\`
 ${commentChain}
 \`\`\`
 `
-        }
+          }
 
-        ins.patches += `
+          ins.patches += `
 ---end_change_section---
 `
-      }
+        }
 
-      if (patchesPacked > 0) {
-        // perform review
-        try {
-          const [response] = await heavyBot.chat(
-            prompts.renderReviewFileDiff(ins),
-            {}
-          )
-          if (response === '') {
-            info('review: nothing obtained from openai')
-            reviewsFailed.push(`${filename} (no response)`)
-            hunkCoverage.markFile(filename, 'failed_analysis')
-            return
-          }
-          // Fail the entire file before publishing anything if the model
-          // omits a hunk, invents a location or cites non-existent source.
-          const structured = processStructuredReview(
-            response,
-            changedLineIndex,
-            fileDiff,
-            patchesPacked
-          )
-          for (const finding of structured.comments) {
-            await commenter.bufferReviewComment(
-              filename,
-              finding.startLine,
-              finding.endLine,
-              finding.message
+        if (patchesPacked > 0) {
+          // perform review
+          try {
+            const [response] = await heavyBot.chat(
+              prompts.renderReviewFileDiff(ins),
+              {}
             )
-            reviewCount += 1
-          }
-          for (const cleanHunk of structured.cleanHunks) {
-            lgtmCount += 1
-            // Preserve the legacy opt-in LGTM inline comment behavior
-            // when GitHub has an added/right-side anchor available.
-            if (options.reviewCommentLGTM) {
-              const line = changedLineIndex.hunks[cleanHunk].addedLines[0]
-              if (line !== undefined) {
+            if (response === '') {
+              info('review: nothing obtained from openai')
+              reviewsFailed.push(`${filename} (no response)`)
+              hunkCoverage.markFile(filename, 'failed_analysis')
+              return
+            }
+            // Fail the entire file before publishing anything if the model
+            // omits a hunk, invents a location or cites non-existent source.
+            const structured = processStructuredReview(
+              response,
+              changedLineIndex,
+              fileDiff,
+              patchesPacked
+            )
+            for (const finding of structured.comments) {
+              modelFindingsCount += 1
+              if (modelFindingsCount > MAX_MODEL_FINDINGS) {
+                findingCapExceeded = true
+                continue
+              }
+              if (publishableFindingsCount < MAX_PUBLISHABLE_FINDINGS) {
+                publishableFindingsCount += 1
                 await commenter.bufferReviewComment(
                   filename,
-                  line,
-                  line,
-                  'LGTM!'
+                  finding.startLine,
+                  finding.endLine,
+                  finding.message
                 )
                 reviewCount += 1
               }
             }
+            for (const cleanHunk of structured.cleanHunks) {
+              lgtmCount += 1
+              // Preserve the legacy opt-in LGTM inline comment behavior
+              // when GitHub has an added/right-side anchor available.
+              if (options.reviewCommentLGTM) {
+                const line = changedLineIndex.hunks[cleanHunk].addedLines[0]
+                if (line !== undefined) {
+                  await commenter.bufferReviewComment(
+                    filename,
+                    line,
+                    line,
+                    'LGTM!'
+                  )
+                  reviewCount += 1
+                }
+              }
+            }
+            for (const hunkIndex of structured.reviewedHunks) {
+              hunkCoverage.mark(filename, hunkIndex, 'reviewed')
+            }
+          } catch (e: any) {
+            warning('Failed to validate review response (details withheld)')
+            reviewsFailed.push(`${filename} (review failed)`)
+            hunkCoverage.markFile(filename, 'failed_analysis')
           }
-          for (const hunkIndex of structured.reviewedHunks) {
-            hunkCoverage.mark(filename, hunkIndex, 'reviewed')
-          }
-        } catch (e: any) {
-          warning('Failed to validate review response (details withheld)')
-          reviewsFailed.push(`${filename} (review failed)`)
-          hunkCoverage.markFile(filename, 'failed_analysis')
+          hunkCoverage.markUnacknowledged(filename, patchesPacked)
         }
-        hunkCoverage.markUnacknowledged(filename, patchesPacked)
-      } else {
-        reviewsSkipped.push(`${filename} (diff too large)`)
       }
-    }
 
-    const reviewPromises = []
-    for (const [filename, fileDiff, patches] of filesAndChangesReview) {
-      if (options.maxFiles <= 0 || reviewPromises.length < options.maxFiles) {
+      let remainingHunkBudget = MAX_HUNKS_PER_PR
+      const reviewQueue: Array<[string, string, ReviewPatch[]]> = []
+      for (const [filename, fileDiff, patches] of filesAndChangesReview) {
+        if (remainingHunkBudget <= 0) {
+          budgetSkipped.add(filename)
+          hunkCoverage.markPacked(filename, 0)
+          continue
+        }
+        const allowedHunks = Math.min(patches.length, remainingHunkBudget)
+        remainingHunkBudget -= allowedHunks
+        fileHunkLimit.set(filename, allowedHunks)
+        if (allowedHunks < patches.length) {
+          budgetSkipped.add(filename)
+          hunkCoverage.markPacked(filename, allowedHunks)
+        }
+        reviewQueue.push([filename, fileDiff, patches])
+      }
+
+      const reviewPromises = []
+      for (const [filename, fileDiff, patches] of reviewQueue) {
         reviewPromises.push(
           openaiConcurrencyLimit(async () => {
             await doReview(filename, fileDiff, patches)
           })
         )
-      } else {
-        skippedFiles.push(filename)
       }
-    }
 
-    await Promise.all(reviewPromises)
-    statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`
+      await Promise.all(reviewPromises)
+      statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`
 
-    for (const [filename] of filesAndChangesReview) {
-      if (fileCoverage.get(filename) === 'failed_analysis') continue
-      if (
-        reviewsFailed.some(
-          problem =>
-            problem.startsWith(`${filename} (`) ||
-            problem.startsWith(`${filename} comment failed`)
-        )
-      ) {
-        fileCoverage.set(filename, 'failed_analysis')
-      } else if (
-        skippedFiles.includes(filename) ||
-        budgetSkipped.has(filename)
-      ) {
-        fileCoverage.set(filename, 'blocked_by_budget')
-      } else if (fileCoverage.get(filename) === 'pending') {
-        fileCoverage.set(filename, 'reviewed')
+      for (const [filename] of filesAndChangesReview) {
+        if (fileCoverage.get(filename) === 'failed_analysis') continue
+        if (
+          reviewsFailed.some(
+            problem =>
+              problem.startsWith(`${filename} (`) ||
+              problem.startsWith(`${filename} comment failed`)
+          )
+        ) {
+          fileCoverage.set(filename, 'failed_analysis')
+        } else if (budgetSkipped.has(filename)) {
+          fileCoverage.set(filename, 'blocked_by_budget')
+        } else if (fileCoverage.get(filename) === 'pending') {
+          fileCoverage.set(filename, 'reviewed')
+        }
       }
-    }
-    for (const filename of skippedFiles) {
-      if (fileCoverage.get(filename) === 'pending') {
-        fileCoverage.set(filename, 'blocked_by_budget')
-        hunkCoverage.markFile(filename, 'blocked_by_budget')
-      }
-    }
 
-    statusMsg += `
+      statusMsg += `
 ${
   reviewsFailed.length > 0
     ? `<details>
@@ -781,6 +924,19 @@ ${
       })</summary>
 
 * ${reviewsSkipped.join('\n* ')}
+
+</details>
+`
+    : ''
+}
+${
+  budgetSkipped.size > 0
+    ? `<details>
+<summary>Files skipped or partially reviewed due to token budget (${
+        budgetSkipped.size
+      })</summary>
+
+* ${[...budgetSkipped].join('\n* ')}
 
 </details>
 `
@@ -812,77 +968,109 @@ ${
 
 </details>
 `
-    // Publishing is part of the transaction: a model response alone does
-    // not constitute a completed review. Never checkpoint partial coverage.
-    // Recheck immutable PR scope immediately before any inline publishing.
-    // If the PR changed while the LLM was running, its comments are stale.
-    let scopeFresh = false
-    try {
-      const current = await octokit.pulls.get({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: context.payload.pull_request.number
-      })
-      scopeFresh =
-        current.data.head.sha === context.payload.pull_request.head.sha &&
-        current.data.base.sha === context.payload.pull_request.base.sha
-    } catch (e: any) {
-      warning('Cannot verify current PR head (details withheld)')
-    }
-    if (!scopeFresh) {
-      setFailed(
-        'PR head/base changed or cannot be verified; refusing stale review publication'
-      )
-      return
-    }
-
-    const published = await commenter.submitReview(
-      context.payload.pull_request.number,
-      context.payload.pull_request.head.sha,
-      statusMsg
-    )
-    const publishConfirmed =
-      published && summariesFailed.length === 0 && reviewsFailed.length === 0
-    const fileCompletion = assessReviewCompletion(
-      files.map(file => file.filename),
-      files.map(file => ({
-        id: file.filename,
-        status: fileCoverage.get(file.filename) ?? 'pending'
-      })),
-      publishConfirmed
-    )
-    const hunkSnapshot = hunkCoverage.snapshot()
-    const hunkCompletion = assessReviewCompletion(
-      hunkSnapshot.expectedIds,
-      hunkSnapshot.entries,
-      publishConfirmed
-    )
-    const completion = {
-      complete: fileCompletion.complete && hunkCompletion.complete,
-      blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
-    }
-
-    if (completion.complete) {
-      summarizeComment += `\n${commenter.addReviewedCommitId(
-        existingCommitIdsBlock,
-        context.payload.pull_request.head.sha
-      )}\n${REVIEW_COMPLETE_TAG}\n${currentScopeMarker}`
-    } else {
-      // Keep only earlier successful checkpoint IDs, never add the new head.
-      if (existingCommitIdsBlock) {
-        summarizeComment += `\n${existingCommitIdsBlock}`
-        if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
-          summarizeComment += `\n${REVIEW_COMPLETE_TAG}`
-        }
+      // Publishing is part of the transaction: a model response alone does
+      // not constitute a completed review. Never checkpoint partial coverage.
+      // Recheck immutable PR scope immediately before any inline publishing.
+      // If the PR changed while the LLM was running, its comments are stale.
+      let scopeFresh = false
+      try {
+        const current = await octokit.pulls.get({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: context.payload.pull_request.number
+        })
+        scopeFresh =
+          current.data.head.sha === context.payload.pull_request.head.sha &&
+          current.data.base.sha === context.payload.pull_request.base.sha
+      } catch (e: any) {
+        warning('Cannot verify current PR head (details withheld)')
       }
-      summarizeComment += `\n> Partial review: latest head SHA not checkpointed
-      (unprocessed or failed units: ${completion.blockers.length}).`
-      warning(`Partial review: ${completion.blockers.join(', ')}`)
-      setFailed('Review incomplete; no latest-head checkpoint recorded')
-    }
-  }
+      if (!scopeFresh) {
+        await clearInProgressOnAbort(
+          'PR head/base changed or cannot be verified; stale review aborted.'
+        )
+        setFailed(
+          'PR head/base changed or cannot be verified; refusing stale review publication'
+        )
+        return
+      }
 
-  // post the final summary comment
-  await commenter.comment(`${summarizeComment}`, SUMMARIZE_TAG, 'replace')
+      const inconclusive =
+        summariesFailed.length > 0 ||
+        reviewsFailed.length > 0 ||
+        budgetSkipped.size > 0 ||
+        skippedFiles.length > 0 ||
+        findingCapExceeded ||
+        [...fileCoverage.values()].some(
+          status =>
+            status === 'blocked_by_budget' ||
+            status === 'failed_analysis' ||
+            status === 'failed_publish' ||
+            status === 'pending'
+        )
+
+      const publishReview = async (): Promise<boolean> => {
+        if (inconclusive) {
+          return false
+        }
+        const published = await commenter.submitReview(
+          context.payload.pull_request!.number,
+          context.payload.pull_request!.head.sha,
+          statusMsg
+        )
+        return published
+      }
+      const published = await publishReview()
+      const publishConfirmed =
+        published && summariesFailed.length === 0 && reviewsFailed.length === 0
+      const fileCompletion = assessReviewCompletion(
+        files.map(file => file.filename),
+        files.map(file => ({
+          id: file.filename,
+          status: fileCoverage.get(file.filename) ?? 'pending'
+        })),
+        publishConfirmed
+      )
+      const hunkSnapshot = hunkCoverage.snapshot()
+      const hunkCompletion = assessReviewCompletion(
+        hunkSnapshot.expectedIds,
+        hunkSnapshot.entries,
+        publishConfirmed
+      )
+      const completion = {
+        complete: fileCompletion.complete && hunkCompletion.complete,
+        blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
+      }
+
+      if (completion.complete) {
+        summarizeComment += `\n${commenter.addReviewedCommitId(
+          existingCommitIdsBlock,
+          context.payload.pull_request.head.sha
+        )}\n${REVIEW_COMPLETE_TAG}\n${currentScopeMarker}`
+      } else {
+        // Keep only earlier successful checkpoint IDs, never add the new head.
+        if (existingCommitIdsBlock) {
+          summarizeComment += `\n${existingCommitIdsBlock}`
+          if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
+            summarizeComment += `\n${REVIEW_COMPLETE_TAG}`
+          }
+        }
+        summarizeComment += `\n> Partial review: latest head SHA not checkpointed
+      (unprocessed or failed units: ${completion.blockers.length}).`
+        warning(
+          `Partial review: incomplete units (${completion.blockers.length})`
+        )
+        setFailed('Review incomplete; no latest-head checkpoint recorded')
+      }
+    }
+
+    // post the final summary comment
+    await commenter.comment(`${summarizeComment}`, SUMMARIZE_TAG, 'replace')
+  } catch (error) {
+    await clearInProgressOnAbort(
+      'Review failed before completion; latest head SHA not checkpointed.'
+    )
+    throw error
+  }
 }

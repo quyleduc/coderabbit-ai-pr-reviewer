@@ -2,6 +2,20 @@ import {info} from '@actions/core'
 import {minimatch} from 'minimatch'
 import {TokenLimits} from './limits'
 
+function parseIntWithFallback(raw: string, fallback: number, min = 1): number {
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isSafeInteger(parsed) && parsed >= min ? parsed : fallback
+}
+
+function parseFloatWithFallback(
+  raw: string,
+  fallback: number,
+  min = 0
+): number {
+  const parsed = Number.parseFloat(raw)
+  return Number.isFinite(parsed) && parsed >= min ? parsed : fallback
+}
+
 export class Options {
   debug: boolean
   disableReview: boolean
@@ -49,18 +63,30 @@ export class Options {
     this.debug = debug
     this.disableReview = disableReview
     this.disableReleaseNotes = disableReleaseNotes
-    this.maxFiles = parseInt(maxFiles)
+    this.maxFiles = parseIntWithFallback(maxFiles, 0, 0)
     this.reviewSimpleChanges = reviewSimpleChanges
     this.reviewCommentLGTM = reviewCommentLGTM
     this.pathFilters = new PathFilter(pathFilters)
     this.systemMessage = systemMessage
     this.openaiLightModel = openaiLightModel
     this.openaiHeavyModel = openaiHeavyModel
-    this.openaiModelTemperature = parseFloat(openaiModelTemperature)
-    this.openaiRetries = parseInt(openaiRetries)
-    this.openaiTimeoutMS = parseInt(openaiTimeoutMS)
-    this.openaiConcurrencyLimit = parseInt(openaiConcurrencyLimit)
-    this.githubConcurrencyLimit = parseInt(githubConcurrencyLimit)
+    this.openaiModelTemperature = parseFloatWithFallback(
+      openaiModelTemperature,
+      0.0,
+      0
+    )
+    this.openaiRetries = parseIntWithFallback(openaiRetries, 3, 0)
+    this.openaiTimeoutMS = parseIntWithFallback(openaiTimeoutMS, 120000, 1)
+    this.openaiConcurrencyLimit = parseIntWithFallback(
+      openaiConcurrencyLimit,
+      6,
+      1
+    )
+    this.githubConcurrencyLimit = parseIntWithFallback(
+      githubConcurrencyLimit,
+      6,
+      1
+    )
     this.lightTokenLimits = new TokenLimits(openaiLightModel)
     this.heavyTokenLimits = new TokenLimits(openaiHeavyModel)
     this.apiBaseUrl = apiBaseUrl
@@ -95,9 +121,7 @@ export class Options {
   }
 
   checkPath(path: string): boolean {
-    const ok = this.pathFilters.check(path)
-    info(`checking path: ${path} => ${ok}`)
-    return ok
+    return this.pathFilters.check(path)
   }
 }
 
@@ -118,6 +142,15 @@ export class PathFilter {
         }
       }
     }
+  }
+
+  toString(): string {
+    if (this.rules.length === 0) {
+      return '(none)'
+    }
+    return this.rules
+      .map(([rule, exclude]) => `${exclude ? '!' : ''}${rule}`)
+      .join(', ')
   }
 
   check(path: string): boolean {

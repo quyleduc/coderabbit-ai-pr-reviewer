@@ -93,21 +93,18 @@ export const handleReviewComment = async (
     ) {
       let fileDiff = ''
       try {
-        // get diff for this file by comparing the base and head commits
-        const diffAll = await octokit.repos.compareCommits({
+        // get diff for this file using paginated PR files list
+        const files = await octokit.paginate(octokit.pulls.listFiles, {
           owner: repo.owner,
           repo: repo.repo,
-          base: context.payload.pull_request.base.sha,
-          head: context.payload.pull_request.head.sha
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          per_page: 100
         })
-        if (diffAll.data) {
-          const files = diffAll.data.files
-          if (files != null) {
-            const file = files.find(f => f.filename === comment.path)
-            if (file != null && file.patch) {
-              fileDiff = file.patch
-            }
-          }
+        const file = files.find(f => f.filename === comment.path)
+        if (file != null && file.patch) {
+          fileDiff = file.patch
         }
       } catch (error) {
         warning(`Failed to get file diff: ${error}, skipping.`)

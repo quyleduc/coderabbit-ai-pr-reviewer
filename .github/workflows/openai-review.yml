@@ -19,8 +19,10 @@ concurrency:
 
 jobs:
   review:
-    # Privileged automatic review requires an explicit repository opt-in.
-    if: vars.ENABLE_AUTOMATED_PR_REVIEWS == 'true'
+    # Privileged automatic review requires an explicit repository opt-in and same-owner PR head.
+    if: >-
+      vars.ENABLE_AUTOMATED_PR_REVIEWS == 'true' &&
+      startsWith(github.event.pull_request.head.label, format('{0}:', github.repository_owner))
     runs-on: ubuntu-latest
     steps:
       - name: Require model IDs for selected non-default provider

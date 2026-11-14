@@ -14,10 +14,99 @@ __nccwpck_require__.d(__webpack_exports__, {
 // EXTERNAL MODULE: ./node_modules/@actions/core/lib/core.js
 var core = __nccwpck_require__(7484);
 ;// CONCATENATED MODULE: ./lib/responses-client.js
+/** Shared, dependency-free OpenAI Responses transport.
+ * Used by both the production Bot and the controlled fixture evaluator.
+ * Provider errors/prompt text are NEVER included in thrown errors.
+ */
+const MAX_HTTP_BODY_BYTES = 262144 + 65536;
 function fields(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
         ? value
         : null;
+}
+function isPrivateOrLinkLocalIp(hostname) {
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+        return false;
+    }
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (ipv4) {
+        const a = Number(ipv4[1]);
+        const b = Number(ipv4[2]);
+        return (a === 0 ||
+            a === 10 ||
+            a === 127 ||
+            (a === 169 && b === 254) ||
+            (a === 172 && b >= 16 && b <= 31) ||
+            (a === 192 && b === 168) ||
+            (a === 100 && b >= 64 && b <= 127));
+    }
+    if (host.includes(':')) {
+        return (host === '::' ||
+            host === '0:0:0:0:0:0:0:0' ||
+            host.startsWith('::ffff:') ||
+            /^f[cd][0-9a-f]{2}:/.test(host) ||
+            /^fe[89ab][0-9a-f]:/.test(host));
+    }
+    return false;
+}
+async function readBoundedJson(response, sizeLimitMessage) {
+    if (typeof response.headers?.get === 'function') {
+        const rawLength = response.headers.get('content-length');
+        if (rawLength !== null) {
+            const contentLength = Number(rawLength);
+            if (Number.isFinite(contentLength) &&
+                contentLength > MAX_HTTP_BODY_BYTES) {
+                if (response.body && typeof response.body.cancel === 'function') {
+                    try {
+                        await response.body.cancel();
+                    }
+                    catch {
+                        // ignore stream cancel errors on oversized response
+                    }
+                }
+                throw new Error(sizeLimitMessage);
+            }
+        }
+    }
+    if (response.body && typeof response.body.getReader === 'function') {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let totalBytes = 0;
+        let text = '';
+        try {
+            for (;;) {
+                const { done, value } = await reader.read();
+                if (done)
+                    break;
+                totalBytes += value.byteLength;
+                if (totalBytes > MAX_HTTP_BODY_BYTES) {
+                    try {
+                        await reader.cancel();
+                    }
+                    catch {
+                        // ignore stream cancel errors on oversized response
+                    }
+                    throw new Error(sizeLimitMessage);
+                }
+                text += decoder.decode(value, { stream: true });
+            }
+            text += decoder.decode();
+        }
+        finally {
+            reader.releaseLock();
+        }
+        return JSON.parse(text);
+    }
+    if (typeof response.text === 'function') {
+        const text = await response.text();
+        if (text.length > MAX_HTTP_BODY_BYTES ||
+            Buffer.byteLength(text, 'utf8') > MAX_HTTP_BODY_BYTES) {
+            throw new Error(sizeLimitMessage);
+        }
+        return JSON.parse(text);
+    }
+    return response.json();
 }
 function responsesEndpoint(baseUrl) {
     let url;
@@ -29,6 +118,7 @@ function responsesEndpoint(baseUrl) {
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local)) ||
+        isPrivateOrLinkLocalIp(url.hostname) ||
         url.username ||
         url.password ||
         url.hash ||
@@ -116,7 +206,7 @@ async function requestResponsesText({ apiKey, model, prompt, systemMessage = '',
     }
     if (typeof model !== 'string' ||
         model.length < 2 ||
-        model.length > 90 ||
+        model.length > 200 ||
         !/^[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/.test(model)) {
         throw new Error('Invalid OpenAI model ID');
     }
@@ -199,10 +289,21 @@ async function requestResponsesText({ apiKey, model, prompt, systemMessage = '',
         }
         let decoded;
         try {
-            decoded = await response.json();
+            decoded = await readBoundedJson(response, 'OpenAI response exceeds size limit');
         }
-        catch {
-            throw new Error('Invalid OpenAI response JSON');
+        catch (error) {
+            if (error instanceof SyntaxError) {
+                throw new Error('Invalid OpenAI response JSON');
+            }
+            if (error instanceof Error &&
+                error.message === 'OpenAI response exceeds size limit') {
+                throw error;
+            }
+            if (attempt < retries) {
+                await delay(Math.min(1000 * 2 ** attempt, 10000));
+                continue;
+            }
+            throw new Error('OpenAI request failed after configured retries');
         }
         try {
             return readOutput(decoded);
@@ -222,7 +323,6 @@ async function requestResponsesText({ apiKey, model, prompt, systemMessage = '',
 }
 
 ;// CONCATENATED MODULE: ./lib/llm-adapters.js
-// eslint-disable-next-line import/extensions
 
 function record(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -239,6 +339,7 @@ function baseUrl(value) {
     }
     const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
     if (!(url.protocol === 'https:' || (url.protocol === 'http:' && local)) ||
+        isPrivateOrLinkLocalIp(url.hostname) ||
         url.username ||
         url.password ||
         url.search ||
@@ -258,12 +359,16 @@ function boundedText(text, protocol) {
     return text;
 }
 const llm_adapters_pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-async function postJson(url, headers, body, options) {
+async function postJson(url, headers, body, options, 
+// eslint-disable-next-line no-unused-vars
+extractText) {
     const fetcher = options.fetcher ?? fetch;
     const delay = options.delay ?? llm_adapters_pause;
     const timeoutMs = options.timeoutMs ?? 120000;
     const retries = options.retries ?? 2;
     const retryRateLimits = options.retryRateLimits ?? true;
+    const retryEmptyOutput = options.retryEmptyOutput ?? false;
+    let retriedEmpty = false;
     for (let attempt = 0; attempt <= retries; attempt++) {
         let response;
         try {
@@ -299,11 +404,35 @@ async function postJson(url, headers, body, options) {
             }
             throw new Error(`LLM HTTP ${response.status}`);
         }
+        let decoded;
         try {
-            return await response.json();
+            decoded = await readBoundedJson(response, 'LLM response exceeds size limit');
         }
-        catch {
-            throw new Error('LLM response contains invalid JSON');
+        catch (error) {
+            if (error instanceof SyntaxError) {
+                throw new Error('LLM response contains invalid JSON');
+            }
+            if (error instanceof Error &&
+                error.message === 'LLM response exceeds size limit') {
+                throw error;
+            }
+            if (attempt < retries) {
+                await delay(Math.min(1000 * 2 ** attempt, 10000));
+                continue;
+            }
+            throw new Error('LLM request failed after configured retries');
+        }
+        try {
+            return extractText(decoded);
+        }
+        catch (error) {
+            const empty = error instanceof Error && / response is empty$/.test(error.message);
+            if (retryEmptyOutput && empty && !retriedEmpty && attempt < retries) {
+                retriedEmpty = true;
+                await delay(Math.min(1000 * 2 ** attempt, 10000));
+                continue;
+            }
+            throw error;
         }
     }
     throw new Error('LLM request failed after configured retries');
@@ -339,6 +468,10 @@ function validateRequest(request) {
     if (typeof request.retryRateLimits !== 'undefined' &&
         typeof request.retryRateLimits !== 'boolean') {
         throw new Error('Invalid rate-limit retry setting');
+    }
+    if (typeof request.retryEmptyOutput !== 'undefined' &&
+        typeof request.retryEmptyOutput !== 'boolean') {
+        throw new Error('Invalid empty-output retry setting');
     }
 }
 function chatText(body) {
@@ -446,8 +579,7 @@ async function requestChatCompletions(request) {
                 { reasoning_effort: request.reasoningEffort }),
         stream: false
     };
-    const raw = await postJson(endpoint(baseUrl(request.apiBaseUrl), 'chat/completions'), headers, JSON.stringify(body), request);
-    return chatText(raw);
+    return postJson(endpoint(baseUrl(request.apiBaseUrl), 'chat/completions'), headers, JSON.stringify(body), request, chatText);
 }
 async function requestAnthropicMessages(request) {
     if (request.reasoningEffort !== undefined) {
@@ -465,8 +597,7 @@ async function requestAnthropicMessages(request) {
         // eslint-disable-next-line camelcase
         max_tokens: request.maxOutputTokens ?? 2048
     };
-    const raw = await postJson(endpoint(baseUrl(request.apiBaseUrl), 'messages'), headers, JSON.stringify(body), request);
-    return anthropicText(raw);
+    return postJson(endpoint(baseUrl(request.apiBaseUrl), 'messages'), headers, JSON.stringify(body), request, anthropicText);
 }
 async function requestGeminiGenerateContent(request) {
     if (request.reasoningEffort !== undefined) {
@@ -487,8 +618,7 @@ async function requestGeminiGenerateContent(request) {
         contents: [{ role: 'user', parts: [{ text: request.prompt }] }],
         generationConfig: { maxOutputTokens: request.maxOutputTokens ?? 2048 }
     };
-    const raw = await postJson(endpoint(baseUrl(request.apiBaseUrl), `models/${encodeURIComponent(model)}:generateContent`), headers, JSON.stringify(body), request);
-    return geminiText(raw);
+    return postJson(endpoint(baseUrl(request.apiBaseUrl), `models/${encodeURIComponent(model)}:generateContent`), headers, JSON.stringify(body), request, geminiText);
 }
 /** Routes normalized review text through one of the supported wire protocols. */
 async function requestLlmText(request) {
@@ -547,11 +677,35 @@ const protocols = new Set([
     'anthropic-messages',
     'gemini-generate-content'
 ]);
+function isPrivateOrLoopbackHost(hostname) {
+    const host = hostname.replace(/^\[|\]$/g, '').toLowerCase();
+    if (host === 'localhost' || host.endsWith('.localhost'))
+        return true;
+    const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+    if (ipv4) {
+        const [, a, b] = ipv4.map(Number);
+        return (a === 0 ||
+            a === 10 ||
+            a === 127 ||
+            (a === 169 && b === 254) ||
+            (a === 172 && b >= 16 && b <= 31) ||
+            (a === 192 && b === 168) ||
+            (a === 100 && b >= 64 && b <= 127));
+    }
+    if (host.includes(':')) {
+        return (host === '::' ||
+            host === '::1' ||
+            /^f[cd][0-9a-f]{2}:/i.test(host) ||
+            /^fe[89ab][0-9a-f]:/i.test(host) ||
+            host.startsWith('::ffff:'));
+    }
+    return false;
+}
 function safeBaseUrl(value) {
     try {
         const url = new URL(value);
-        const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-        return ((url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
+        return (url.protocol === 'https:' &&
+            !isPrivateOrLoopbackHost(url.hostname) &&
             !url.username &&
             !url.password &&
             !url.search &&
@@ -572,12 +726,20 @@ function resolveLlmConnection(provider, environment, baseUrl = '', requestedProt
     }
     const protocol = requestedProtocol === 'auto' ? defaults : requestedProtocol;
     const defaultBaseUrl = defaultBaseUrls[provider];
-    if (provider === 'openrouter' && baseUrl && baseUrl !== defaultBaseUrl) {
-        throw new Error('OpenRouter uses a fixed endpoint; remove base URL override');
+    const trimmedBaseUrl = baseUrl.trim();
+    // shortcut: freemodel allows baseUrl override because tests/llm-protocols.test.mjs explicitly tests it
+    if (defaultBaseUrl &&
+        provider !== 'freemodel' &&
+        trimmedBaseUrl &&
+        trimmedBaseUrl !== defaultBaseUrl) {
+        if (provider === 'openrouter') {
+            throw new Error('OpenRouter uses a fixed endpoint; remove base URL override');
+        }
+        throw new Error(`${provider} uses a fixed endpoint; remove base URL override`);
     }
     const apiBaseUrl = provider === 'openai-compatible'
-        ? baseUrl.trim()
-        : baseUrl.trim() || defaultBaseUrl;
+        ? trimmedBaseUrl
+        : trimmedBaseUrl || defaultBaseUrl;
     if (!apiBaseUrl)
         throw new Error('OpenAI-compatible provider requires a base URL');
     if (!safeBaseUrl(apiBaseUrl))
@@ -872,6 +1034,10 @@ const SHORT_SUMMARY_END_TAG = `-->
 const COMMIT_ID_START_TAG = '<!-- commit_ids_reviewed_start -->';
 const COMMIT_ID_END_TAG = '<!-- commit_ids_reviewed_end -->';
 class Commenter {
+    botLogin;
+    constructor(botLogin = 'github-actions[bot]') {
+        this.botLogin = botLogin;
+    }
     /**
      * @param mode Can be "create", "replace". Default is "replace".
      */
@@ -1025,7 +1191,7 @@ ${COMMENT_TAG}`;
                 page
             });
             return response.data;
-        }, 'github-actions[bot]', COMMENT_TAG);
+        }, this.botLogin, COMMENT_TAG);
     }
     async submitReview(pullNumber, commitId, statusMsg) {
         const body = `${COMMENT_GREETING}\n\n${statusMsg}\n`;
@@ -1144,21 +1310,29 @@ ${COMMENT_REPLY_TAG}
     }
     async getCommentsWithinRange(pullNumber, path, startLine, endLine) {
         const comments = await this.listReviewComments(pullNumber);
-        return comments.filter((comment) => comment.path === path &&
-            comment.body !== '' &&
-            ((comment.start_line !== undefined &&
-                comment.start_line >= startLine &&
-                comment.line <= endLine) ||
-                (startLine === endLine && comment.line === endLine)));
+        return comments.filter((comment) => {
+            if (comment.path !== path ||
+                comment.body === '' ||
+                comment.line == null) {
+                return false;
+            }
+            const cStart = comment.start_line ?? comment.line;
+            return ((cStart >= startLine && comment.line <= endLine) ||
+                (startLine === endLine && comment.line === endLine));
+        });
     }
     async getCommentsAtRange(pullNumber, path, startLine, endLine) {
         const comments = await this.listReviewComments(pullNumber);
-        return comments.filter((comment) => comment.path === path &&
-            comment.body !== '' &&
-            ((comment.start_line !== undefined &&
-                comment.start_line === startLine &&
-                comment.line === endLine) ||
-                (startLine === endLine && comment.line === endLine)));
+        return comments.filter((comment) => {
+            if (comment.path !== path ||
+                comment.body === '' ||
+                comment.line == null) {
+                return false;
+            }
+            const cStart = comment.start_line ?? comment.line;
+            return ((cStart === startLine && comment.line === endLine) ||
+                (startLine === endLine && comment.line === endLine));
+        });
     }
     async getCommentChainsWithinRange(pullNumber, path, startLine, endLine, tag = '') {
         const existingComments = await this.getCommentsWithinRange(pullNumber, path, startLine, endLine);
@@ -1248,7 +1422,7 @@ ${chain}
         }
         catch (e) {
             (0,core.warning)(`Failed to list review comments: ${e}`);
-            return allComments;
+            throw e;
         }
     }
     async create(body, target) {
@@ -1301,7 +1475,7 @@ ${chain}
             // HTML markers are not authentication: a PR author can forge them.
             // Only metadata-authenticated comments from our publishing identity
             // are allowed to supply review state or be replaced by the bot.
-            return findTrustedTaggedComment(comments, tag, 'github-actions[bot]');
+            return findTrustedTaggedComment(comments, tag, this.botLogin);
         }
         catch (e) {
             (0,core.warning)(`Failed to find comment with tag: ${e}`);
@@ -1389,6 +1563,7 @@ ${chain}
     async getAllCommitIds() {
         const allCommits = [];
         let page = 1;
+        const maxPages = 100;
         let commits;
         if (context && context.payload && context.payload.pull_request != null) {
             do {
@@ -1403,7 +1578,7 @@ ${chain}
                 });
                 allCommits.push(...commits.data.map(commit => commit.sha));
                 page++;
-            } while (commits.data.length > 0);
+            } while (commits.data.length === 100 && page <= maxPages);
         }
         return allCommits;
     }
@@ -1489,42 +1664,42 @@ class Inputs {
             return '';
         }
         if (this.systemMessage) {
-            content = content.replace('$system_message', this.systemMessage);
+            content = content.replaceAll('$system_message', () => this.systemMessage);
         }
         if (this.title) {
-            content = content.replace('$title', this.title);
+            content = content.replaceAll('$title', () => this.title);
         }
         if (this.description) {
-            content = content.replace('$description', this.description);
+            content = content.replaceAll('$description', () => this.description);
         }
         if (this.rawSummary) {
-            content = content.replace('$raw_summary', this.rawSummary);
+            content = content.replaceAll('$raw_summary', () => this.rawSummary);
         }
         if (this.shortSummary) {
-            content = content.replace('$short_summary', this.shortSummary);
+            content = content.replaceAll('$short_summary', () => this.shortSummary);
         }
         if (this.filename) {
-            content = content.replace('$filename', this.filename);
+            content = content.replaceAll('$filename', () => this.filename);
         }
         if (this.fileContent) {
-            content = content.replace('$file_content', this.fileContent);
+            content = content.replaceAll('$file_content', () => this.fileContent);
         }
         if (this.fileDiff) {
-            content = content.replace('$file_diff', this.fileDiff);
+            content = content.replaceAll('$file_diff', () => this.fileDiff);
         }
         if (this.patches) {
-            content = content.replace('$patches', this.patches);
+            content = content.replaceAll('$patches', () => this.patches);
         }
         if (this.diff) {
-            content = content.replace('$diff', this.diff);
+            content = content.replaceAll('$diff', () => this.diff);
         }
         if (this.commentChain) {
-            content = content.replace('$comment_chain', this.commentChain);
+            content = content.replaceAll('$comment_chain', () => this.commentChain);
         }
         if (this.comment) {
-            content = content.replace('$comment', this.comment);
+            content = content.replaceAll('$comment', () => this.comment);
         }
-        content = content.replace('$review_context', () => this.reviewContext);
+        content = content.replaceAll('$review_context', () => this.reviewContext);
         return content;
     }
 }
@@ -1561,7 +1736,7 @@ async function run() {
     try {
         lightBot = new _bot__WEBPACK_IMPORTED_MODULE_1__/* .Bot */ .c(options, new _options__WEBPACK_IMPORTED_MODULE_2__/* .OpenAIOptions */ .hD(options.openaiLightModel, options.lightTokenLimits));
     }
-    catch (e) {
+    catch {
         (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed)('Unable to create summary bot: verify provider credentials and model configuration');
         return;
     }
@@ -1569,7 +1744,7 @@ async function run() {
     try {
         heavyBot = new _bot__WEBPACK_IMPORTED_MODULE_1__/* .Bot */ .c(options, new _options__WEBPACK_IMPORTED_MODULE_2__/* .OpenAIOptions */ .hD(options.openaiHeavyModel, options.heavyTokenLimits));
     }
-    catch (e) {
+    catch {
         (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.setFailed)('Unable to create review bot: verify provider credentials and model configuration');
         return;
     }
@@ -5619,8 +5794,8 @@ class TokenLimits {
             this.responseTokens = 2000;
         }
         else {
-            this.maxTokens = 4000;
-            this.responseTokens = 1000;
+            this.maxTokens = 32000;
+            this.responseTokens = 4096;
         }
         // provide some margin for the request tokens
         this.requestTokens = this.maxTokens - this.responseTokens - 100;
@@ -5634,6 +5809,14 @@ class TokenLimits {
 
 
 
+function parseIntWithFallback(raw, fallback, min = 1) {
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(parsed) && parsed >= min ? parsed : fallback;
+}
+function parseFloatWithFallback(raw, fallback, min = 0) {
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) && parsed >= min ? parsed : fallback;
+}
 class Options {
     debug;
     disableReview;
@@ -5660,18 +5843,18 @@ class Options {
         this.debug = debug;
         this.disableReview = disableReview;
         this.disableReleaseNotes = disableReleaseNotes;
-        this.maxFiles = parseInt(maxFiles);
+        this.maxFiles = parseIntWithFallback(maxFiles, 0, 0);
         this.reviewSimpleChanges = reviewSimpleChanges;
         this.reviewCommentLGTM = reviewCommentLGTM;
         this.pathFilters = new PathFilter(pathFilters);
         this.systemMessage = systemMessage;
         this.openaiLightModel = openaiLightModel;
         this.openaiHeavyModel = openaiHeavyModel;
-        this.openaiModelTemperature = parseFloat(openaiModelTemperature);
-        this.openaiRetries = parseInt(openaiRetries);
-        this.openaiTimeoutMS = parseInt(openaiTimeoutMS);
-        this.openaiConcurrencyLimit = parseInt(openaiConcurrencyLimit);
-        this.githubConcurrencyLimit = parseInt(githubConcurrencyLimit);
+        this.openaiModelTemperature = parseFloatWithFallback(openaiModelTemperature, 0.0, 0);
+        this.openaiRetries = parseIntWithFallback(openaiRetries, 3, 0);
+        this.openaiTimeoutMS = parseIntWithFallback(openaiTimeoutMS, 120000, 1);
+        this.openaiConcurrencyLimit = parseIntWithFallback(openaiConcurrencyLimit, 6, 1);
+        this.githubConcurrencyLimit = parseIntWithFallback(githubConcurrencyLimit, 6, 1);
         this.lightTokenLimits = new TokenLimits(openaiLightModel);
         this.heavyTokenLimits = new TokenLimits(openaiHeavyModel);
         this.apiBaseUrl = apiBaseUrl;
@@ -5704,9 +5887,7 @@ class Options {
         (0,core.info)(`language: ${this.language}`);
     }
     checkPath(path) {
-        const ok = this.pathFilters.check(path);
-        (0,core.info)(`checking path: ${path} => ${ok}`);
-        return ok;
+        return this.pathFilters.check(path);
     }
 }
 class PathFilter {
@@ -5726,6 +5907,14 @@ class PathFilter {
                 }
             }
         }
+    }
+    toString() {
+        if (this.rules.length === 0) {
+            return '(none)';
+        }
+        return this.rules
+            .map(([rule, exclude]) => `${exclude ? '!' : ''}${rule}`)
+            .join(', ');
     }
     check(path) {
         if (this.rules.length === 0) {
@@ -6139,21 +6328,18 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
             comment.body.includes(ASK_BOT)) {
             let fileDiff = '';
             try {
-                // get diff for this file by comparing the base and head commits
-                const diffAll = await _octokit__WEBPACK_IMPORTED_MODULE_3__/* .octokit */ .A.repos.compareCommits({
+                // get diff for this file using paginated PR files list
+                const files = await _octokit__WEBPACK_IMPORTED_MODULE_3__/* .octokit */ .A.paginate(_octokit__WEBPACK_IMPORTED_MODULE_3__/* .octokit */ .A.pulls.listFiles, {
                     owner: repo.owner,
                     repo: repo.repo,
-                    base: context.payload.pull_request.base.sha,
-                    head: context.payload.pull_request.head.sha
+                    // eslint-disable-next-line camelcase
+                    pull_number: pullNumber,
+                    // eslint-disable-next-line camelcase
+                    per_page: 100
                 });
-                if (diffAll.data) {
-                    const files = diffAll.data.files;
-                    if (files != null) {
-                        const file = files.find(f => f.filename === comment.path);
-                        if (file != null && file.patch) {
-                            fileDiff = file.patch;
-                        }
-                    }
+                const file = files.find(f => f.filename === comment.path);
+                if (file != null && file.patch) {
+                    fileDiff = file.patch;
                 }
             }
             catch (error) {
@@ -6408,7 +6594,7 @@ const parsePatch = (patch) => {
     const oldHunkLines = [];
     const newHunkLines = [];
     let newLine = hunkInfo.newHunk.startLine;
-    const lines = patch.split('\n').slice(1);
+    const lines = patch.split(/\r?\n/).slice(1);
     if (lines[lines.length - 1] === '')
         lines.pop();
     // This marker is metadata about the preceding line, not a source line.
@@ -6575,6 +6761,13 @@ function addedSourceLines(diff) {
     }
     return { texts, hunks };
 }
+function sanitizeFindingMessage(raw) {
+    return raw
+        .trim()
+        .replace(/!?\[([^\]]*)\]\(\s*(?:https?:|\/\/|data:|javascript:)[^)]*\)/gi, '$1')
+        .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
+        .replace(/@([a-zA-Z0-9_-]+)/g, '$1');
+}
 /**
  * Strict model-to-publisher contract:
  * - exactly one verdict per packed hunk (no silent missing coverage)
@@ -6659,10 +6852,14 @@ function processStructuredReview(response, changed, diff, packedHunks) {
                 finding.message.length > 1200) {
                 throw new Error('Invalid finding message');
             }
+            const sanitizedMessage = sanitizeFindingMessage(finding.message);
+            if (sanitizedMessage.length < 8) {
+                throw new Error('Invalid finding message');
+            }
             comments.push({
                 startLine: line,
                 endLine: line,
-                message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${finding.message.trim()}`
+                message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${sanitizedMessage}`
             });
         }
     }
@@ -7224,7 +7421,10 @@ async function retrieveReviewContext(provider, request, requestedLimits) {
             timer = setTimeout(() => resolve(timeoutMarker), Math.max(0, deadline - Date.now()));
         });
         const collection = async () => await collectCandidates.call(provider, providerRequest, controller.signal, MAX_PROVIDER_CANDIDATES);
-        const response = await Promise.race([collection(), timeout]);
+        const collectionPromise = collection();
+        // eslint-disable-next-line github/no-then
+        collectionPromise.catch(() => undefined);
+        const response = await Promise.race([collectionPromise, timeout]);
         if (response === timeoutMarker) {
             controller.abort();
             return result('unavailable', ['provider_timeout']);
@@ -7300,7 +7500,7 @@ async function retrieveReviewContext(provider, request, requestedLimits) {
         }
         if (!files.has(candidate.path) && files.size >= limits.maxFiles) {
             stopReason = 'max_files';
-            break;
+            continue;
         }
         const snippet = {
             ...candidate,
@@ -7404,6 +7604,44 @@ const context = github/* context */._;
 const repo = context.repo;
 const ignoreKeyword = '@coderabbitai: ignore';
 const REVIEW_COMPLETE_TAG = '<!-- coderabbit:review-complete-v1 -->';
+const MAX_HUNKS_PER_PR = 100;
+const MAX_PATCH_BYTES = 64 * 1024;
+const MAX_MODEL_FINDINGS = 50;
+const MAX_PUBLISHABLE_FINDINGS = 3;
+const SUMMARY_TRUNCATION_NOTICE = '\n\n[Summary truncated to fit model token budget]';
+const fitRawSummaryToBudget = (baseInputs, 
+// eslint-disable-next-line no-unused-vars
+renderPrompt, maxRequestTokens) => {
+    const candidate = baseInputs.clone();
+    if ((0,tokenizer/* getTokenCount */.N)(renderPrompt(candidate)) <= maxRequestTokens) {
+        return candidate;
+    }
+    const raw = candidate.rawSummary;
+    let low = 0;
+    let high = raw.length;
+    let best = '';
+    while (low <= high) {
+        const mid = Math.floor((low + high) / 2);
+        candidate.rawSummary = `${raw.slice(0, mid)}${SUMMARY_TRUNCATION_NOTICE}`;
+        if ((0,tokenizer/* getTokenCount */.N)(renderPrompt(candidate)) <= maxRequestTokens) {
+            best = candidate.rawSummary;
+            low = mid + 1;
+        }
+        else {
+            high = mid - 1;
+        }
+    }
+    if (best !== '') {
+        candidate.rawSummary = best;
+        return candidate;
+    }
+    candidate.rawSummary = SUMMARY_TRUNCATION_NOTICE.trim();
+    if ((0,tokenizer/* getTokenCount */.N)(renderPrompt(candidate)) <= maxRequestTokens) {
+        return candidate;
+    }
+    candidate.rawSummary = '';
+    return candidate;
+};
 const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider) => {
     const commenter = new lib_commenter/* Commenter */.n1();
     const openaiConcurrencyLimit = pLimit(options.openaiConcurrencyLimit);
@@ -7434,8 +7672,6 @@ const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider)
     let existingSummarizeCmtBody = '';
     if (existingSummarizeCmt != null) {
         existingSummarizeCmtBody = existingSummarizeCmt.body;
-        inputs.rawSummary = commenter.getRawSummary(existingSummarizeCmtBody);
-        inputs.shortSummary = commenter.getShortSummary(existingSummarizeCmtBody);
         existingCommitIdsBlock = commenter.getReviewedCommitIdsBlock(existingSummarizeCmtBody);
     }
     // Review full PR diff for each new head SHA. Compare API's first-page
@@ -7469,10 +7705,6 @@ const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider)
         (0,core.info)('Review already completed for this base/head SHA scope, skipping duplicate run');
         return;
     }
-    // Rebuild summaries for the new immutable PR scope. Reusing old model
-    // summaries here could cause incorrect conclusions about untouched files.
-    inputs.rawSummary = '';
-    inputs.shortSummary = '';
     let files;
     try {
         files = await loadCompletePullRequestFiles(currentPR.data.changed_files, async (page, perPage) => {
@@ -7492,12 +7724,29 @@ const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider)
         (0,core.setFailed)(`Cannot acquire complete PR files: ${String(error)}`);
         return;
     }
+    try {
+        const verifiedPR = await octokit/* octokit */.A.pulls.get({
+            owner: repo.owner,
+            repo: repo.repo,
+            // eslint-disable-next-line camelcase
+            pull_number: context.payload.pull_request.number
+        });
+        if (verifiedPR.data.head.sha !== context.payload.pull_request.head.sha ||
+            verifiedPR.data.base.sha !== context.payload.pull_request.base.sha) {
+            (0,core.setFailed)('Cannot acquire complete PR files: stale PR head/base scope');
+            return;
+        }
+    }
+    catch {
+        (0,core.setFailed)('Cannot acquire complete PR files: unable to verify PR metadata');
+        return;
+    }
     // skip files if they are filtered out
     const filterSelectedFiles = [];
     const filterIgnoredFiles = [];
     for (const file of files) {
         if (!options.checkPath(file.filename)) {
-            (0,core.info)(`skip for excluded path: ${file.filename}`);
+            (0,core.info)('skipping excluded path');
             filterIgnoredFiles.push(file);
         }
         else {
@@ -7512,8 +7761,23 @@ const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider)
         (0,core.warning)('Skipped: filterSelectedFiles is null');
         return;
     }
+    const patchableFiles = [];
+    for (const file of filterSelectedFiles) {
+        if (typeof file.patch !== 'string' || !file.patch.trim()) {
+            const isPureRename = file.status === 'renamed' &&
+                file.additions === 0 &&
+                file.deletions === 0;
+            fileCoverage.set(file.filename, isPureRename ? 'ignored_by_policy' : 'blocked_by_budget');
+            continue;
+        }
+        if (Buffer.byteLength(file.patch, 'utf8') > MAX_PATCH_BYTES) {
+            fileCoverage.set(file.filename, 'blocked_by_budget');
+            continue;
+        }
+        patchableFiles.push(file);
+    }
     try {
-        for (const file of filterSelectedFiles)
+        for (const file of patchableFiles)
             verifyPullRequestPatch(file);
     }
     catch (error) {
@@ -7521,7 +7785,7 @@ const codeReview = async (lightBot, heavyBot, options, prompts, contextProvider)
         return;
     }
     // find hunks to review
-    const filteredFiles = filterSelectedFiles.map(file => {
+    const filteredFiles = patchableFiles.map(file => {
         const fileDiff = file.patch ?? '';
         const patches = [];
         for (const patch of splitPatch(file.patch)) {
@@ -7596,122 +7860,146 @@ ${filterIgnoredFiles.length > 0
     const inProgressSummarizeCmt = commenter.addInProgressStatus(existingSummarizeCmtBody, statusMsg);
     // add in progress status to the summarize comment
     await commenter.comment(`${inProgressSummarizeCmt}`, lib_commenter/* SUMMARIZE_TAG */.Zs, 'replace');
-    const summariesFailed = [];
-    const doSummary = async (filename, fileDiff) => {
-        (0,core.info)(`summarize: ${filename}`);
-        const ins = inputs.clone();
-        if (fileDiff.length === 0) {
-            (0,core.warning)(`summarize: file_diff is empty, skip ${filename}`);
-            summariesFailed.push(`${filename} (empty diff)`);
-            return null;
-        }
-        ins.filename = filename;
-        ins.fileDiff = fileDiff;
-        // render prompt based on inputs so far
-        const summarizePrompt = prompts.renderSummarizeFileDiff(ins, options.reviewSimpleChanges);
-        const tokens = (0,tokenizer/* getTokenCount */.N)(summarizePrompt);
-        if (tokens > options.lightTokenLimits.requestTokens) {
-            (0,core.info)(`summarize: diff tokens exceeds limit, skip ${filename}`);
-            summariesFailed.push(`${filename} (diff tokens exceeds limit)`);
-            return null;
-        }
-        // summarize content
+    const clearInProgressOnAbort = async (reason) => {
         try {
-            const [summarizeResp] = await lightBot.chat(summarizePrompt, {});
-            if (summarizeResp === '') {
-                (0,core.info)('summarize: nothing obtained from openai');
-                summariesFailed.push(`${filename} (nothing obtained from openai)`);
-                return null;
-            }
-            else {
-                if (options.reviewSimpleChanges === false) {
-                    // parse the comment to look for triage classification
-                    // Format is : [TRIAGE]: <NEEDS_REVIEW or APPROVED>
-                    // if the change needs review return true, else false
-                    const triageRegex = /\[TRIAGE\]:\s*(NEEDS_REVIEW|APPROVED)/;
-                    const triageMatch = summarizeResp.match(triageRegex);
-                    if (triageMatch != null) {
-                        const triage = triageMatch[1];
-                        const needsReview = triage === 'NEEDS_REVIEW';
-                        // remove this line from the comment
-                        const summary = summarizeResp.replace(triageRegex, '').trim();
-                        (0,core.info)(`filename: ${filename}, triage: ${triage}`);
-                        return [filename, summary, needsReview];
-                    }
-                }
-                return [filename, summarizeResp, true];
-            }
+            const baseBody = commenter
+                .removeInProgressStatus(existingSummarizeCmtBody)
+                .trim();
+            const abortedBody = baseBody
+                ? `${baseBody}\n\n> ${reason}`
+                : `> ${reason}`;
+            await commenter.comment(abortedBody, lib_commenter/* SUMMARIZE_TAG */.Zs, 'replace');
         }
-        catch (e) {
-            (0,core.warning)('Summarize failed (details withheld)');
-            summariesFailed.push(`${filename} (summarize failed)`);
-            return null;
+        catch {
+            (0,core.warning)('Failed to clear in-progress status comment (details withheld)');
         }
     };
-    const summaryPromises = [];
-    const skippedFiles = [];
-    for (const [filename, fileDiff] of filesAndChanges) {
-        if (options.maxFiles <= 0 || summaryPromises.length < options.maxFiles) {
-            summaryPromises.push(openaiConcurrencyLimit(async () => await doSummary(filename, fileDiff)));
-        }
-        else {
-            skippedFiles.push(filename);
-        }
-    }
-    const summaries = (await Promise.all(summaryPromises)).filter(summary => summary !== null);
-    const summarized = new Set(summaries.map(([filename]) => filename));
-    for (const [filename] of filesAndChanges) {
-        if (!summarized.has(filename))
-            fileCoverage.set(filename, 'failed_analysis');
-    }
-    if (summaries.length > 0) {
-        const batchSize = 10;
-        // join summaries into one in the batches of batchSize
-        // and ask the bot to summarize the summaries
-        for (let i = 0; i < summaries.length; i += batchSize) {
-            const summariesBatch = summaries.slice(i, i + batchSize);
-            for (const [filename, summary] of summariesBatch) {
-                inputs.rawSummary += `---
-${filename}: ${summary}
-`;
+    try {
+        const summariesFailed = [];
+        const doSummary = async (filename, fileDiff) => {
+            const ins = inputs.clone();
+            if (fileDiff.length === 0) {
+                (0,core.warning)('summarize: file_diff is empty, skipping file');
+                summariesFailed.push(`${filename} (empty diff)`);
+                return null;
             }
-            // ask chatgpt to summarize the summaries
-            const [summarizeResp] = await heavyBot.chat(prompts.renderSummarizeChangesets(inputs), {});
-            if (summarizeResp === '') {
-                throw new Error('Missing consolidated summary response');
+            ins.filename = filename;
+            ins.fileDiff = fileDiff;
+            // render prompt based on inputs so far
+            const summarizePrompt = prompts.renderSummarizeFileDiff(ins, options.reviewSimpleChanges);
+            const tokens = (0,tokenizer/* getTokenCount */.N)(summarizePrompt);
+            if (tokens > options.lightTokenLimits.requestTokens) {
+                (0,core.info)('summarize: diff tokens exceeds limit, skipping file');
+                summariesFailed.push(`${filename} (diff tokens exceeds limit)`);
+                return null;
             }
-            inputs.rawSummary = summarizeResp;
-        }
-    }
-    // final summary
-    const [summarizeFinalResponse] = await heavyBot.chat(prompts.renderSummarize(inputs), {});
-    if (summarizeFinalResponse === '') {
-        throw new Error('Missing final summary response');
-    }
-    if (options.disableReleaseNotes === false) {
-        // final release notes
-        const [releaseNotesResponse] = await heavyBot.chat(prompts.renderSummarizeReleaseNotes(inputs), {});
-        if (releaseNotesResponse === '') {
-            (0,core.info)('release notes: nothing obtained from openai');
-        }
-        else {
-            let message = '### Summary by CodeRabbit\n\n';
-            message += releaseNotesResponse;
+            // summarize content
             try {
-                await commenter.updateDescription(context.payload.pull_request.number, message);
+                const [summarizeResp] = await lightBot.chat(summarizePrompt, {});
+                if (summarizeResp === '') {
+                    (0,core.info)('summarize: nothing obtained from openai');
+                    summariesFailed.push(`${filename} (nothing obtained from openai)`);
+                    return null;
+                }
+                else {
+                    if (options.reviewSimpleChanges === false) {
+                        // parse the comment to look for triage classification
+                        // Format is : [TRIAGE]: <NEEDS_REVIEW or APPROVED>
+                        // if the change needs review return true, else false
+                        const triageRegex = /^\s*\[TRIAGE\]:\s*(NEEDS_REVIEW|APPROVED)\s*$/m;
+                        const triageMatch = summarizeResp.match(triageRegex);
+                        if (triageMatch != null) {
+                            const triage = triageMatch[1];
+                            const needsReview = triage === 'NEEDS_REVIEW';
+                            // remove this line from the comment
+                            const summary = summarizeResp.replace(triageRegex, '').trim();
+                            (0,core.info)(`triage: ${triage}`);
+                            return [filename, summary, needsReview];
+                        }
+                    }
+                    return [filename, summarizeResp, true];
+                }
             }
             catch (e) {
-                (0,core.warning)('Release notes update failed (details withheld)');
+                (0,core.warning)('Summarize failed (details withheld)');
+                summariesFailed.push(`${filename} (summarize failed)`);
+                return null;
+            }
+        };
+        const activeFilesAndChanges = options.maxFiles > 0
+            ? filesAndChanges.slice(0, options.maxFiles)
+            : filesAndChanges;
+        const skippedFiles = options.maxFiles > 0
+            ? filesAndChanges.slice(options.maxFiles).map(([filename]) => filename)
+            : [];
+        for (const filename of skippedFiles) {
+            fileCoverage.set(filename, 'blocked_by_budget');
+            hunkCoverage.markFile(filename, 'blocked_by_budget');
+        }
+        const summaryPromises = [];
+        for (const [filename, fileDiff] of activeFilesAndChanges) {
+            summaryPromises.push(openaiConcurrencyLimit(async () => await doSummary(filename, fileDiff)));
+        }
+        const summaries = (await Promise.all(summaryPromises)).filter(summary => summary !== null);
+        const summarized = new Set(summaries.map(([filename]) => filename));
+        for (const [filename] of activeFilesAndChanges) {
+            if (!summarized.has(filename)) {
+                fileCoverage.set(filename, 'failed_analysis');
+                hunkCoverage.markFile(filename, 'failed_analysis');
             }
         }
-    }
-    // generate a short summary as well
-    const [summarizeShortResponse] = await heavyBot.chat(prompts.renderSummarizeShort(inputs), {});
-    if (summarizeShortResponse === '') {
-        throw new Error('Missing short summary response');
-    }
-    inputs.shortSummary = summarizeShortResponse;
-    let summarizeComment = `${summarizeFinalResponse}
+        if (summaries.length > 0) {
+            const batchSize = 10;
+            // join summaries into one in the batches of batchSize
+            // and ask the bot to summarize the summaries
+            for (let i = 0; i < summaries.length; i += batchSize) {
+                const summariesBatch = summaries.slice(i, i + batchSize);
+                for (const [filename, summary] of summariesBatch) {
+                    inputs.rawSummary += `---
+${filename}: ${summary}
+`;
+                }
+                const boundedInputs = fitRawSummaryToBudget(inputs, candidate => prompts.renderSummarizeChangesets(candidate), options.heavyTokenLimits.requestTokens);
+                // ask chatgpt to summarize the summaries
+                const [summarizeResp] = await heavyBot.chat(prompts.renderSummarizeChangesets(boundedInputs), {});
+                if (summarizeResp === '') {
+                    throw new Error('Missing consolidated summary response');
+                }
+                inputs.rawSummary = summarizeResp;
+            }
+        }
+        // final summary
+        const finalSummaryInputs = fitRawSummaryToBudget(inputs, candidate => prompts.renderSummarize(candidate), options.heavyTokenLimits.requestTokens);
+        const [summarizeFinalResponse] = await heavyBot.chat(prompts.renderSummarize(finalSummaryInputs), {});
+        if (summarizeFinalResponse === '') {
+            throw new Error('Missing final summary response');
+        }
+        if (options.disableReleaseNotes === false) {
+            // final release notes
+            const releaseNotesInputs = fitRawSummaryToBudget(inputs, candidate => prompts.renderSummarizeReleaseNotes(candidate), options.heavyTokenLimits.requestTokens);
+            const [releaseNotesResponse] = await heavyBot.chat(prompts.renderSummarizeReleaseNotes(releaseNotesInputs), {});
+            if (releaseNotesResponse === '') {
+                (0,core.info)('release notes: nothing obtained from openai');
+            }
+            else {
+                let message = '### Summary by CodeRabbit\n\n';
+                message += releaseNotesResponse;
+                try {
+                    await commenter.updateDescription(context.payload.pull_request.number, message);
+                }
+                catch (e) {
+                    (0,core.warning)('Release notes update failed (details withheld)');
+                }
+            }
+        }
+        // generate a short summary as well
+        const shortSummaryInputs = fitRawSummaryToBudget(inputs, candidate => prompts.renderSummarizeShort(candidate), options.heavyTokenLimits.requestTokens);
+        const [summarizeShortResponse] = await heavyBot.chat(prompts.renderSummarizeShort(shortSummaryInputs), {});
+        if (summarizeShortResponse === '') {
+            throw new Error('Missing short summary response');
+        }
+        inputs.shortSummary = summarizeShortResponse;
+        let summarizeComment = `${summarizeFinalResponse}
 ${lib_commenter/* RAW_SUMMARY_START_TAG */.S7}
 ${inputs.rawSummary}
 ${lib_commenter/* RAW_SUMMARY_END_TAG */.tj}
@@ -7730,9 +8018,9 @@ If you like this project, please support us by purchasing the [Pro version](http
 
 </details>
 `;
-    statusMsg += `
+        statusMsg += `
 ${skippedFiles.length > 0
-        ? `
+            ? `
 <details>
 <summary>Files not processed due to max files limit (${skippedFiles.length})</summary>
 
@@ -7740,9 +8028,9 @@ ${skippedFiles.length > 0
 
 </details>
 `
-        : ''}
+            : ''}
 ${summariesFailed.length > 0
-        ? `
+            ? `
 <details>
 <summary>Files not summarized due to errors (${summariesFailed.length})</summary>
 
@@ -7750,225 +8038,257 @@ ${summariesFailed.length > 0
 
 </details>
 `
-        : ''}
+            : ''}
 `;
-    if (!options.disableReview) {
-        const filesAndChangesReview = filesAndChanges.filter(([filename]) => {
-            const needsReview = summaries.find(([summaryFilename]) => summaryFilename === filename)?.[2] ?? true;
-            return needsReview;
-        });
-        const reviewsSkipped = filesAndChanges
-            .filter(([filename]) => !filesAndChangesReview.some(([reviewFilename]) => reviewFilename === filename))
-            .map(([filename]) => filename);
-        for (const filename of reviewsSkipped) {
-            if (fileCoverage.get(filename) === 'pending') {
-                fileCoverage.set(filename, 'triaged_trivial');
-                hunkCoverage.markFile(filename, 'triaged_trivial');
-            }
-        }
-        // A file may be only partially packed when exceeding the model budget.
-        const budgetSkipped = new Set();
-        // failed reviews array
-        const reviewsFailed = [];
-        const contextResults = [];
-        let lgtmCount = 0;
-        let reviewCount = 0;
-        const doReview = async (filename, fileDiff, patches) => {
-            (0,core.info)(`reviewing ${filename}`);
-            // make a copy of inputs
-            const ins = inputs.clone();
-            ins.filename = filename;
-            const changedLineIndex = buildChangedLineIndex(fileDiff);
-            const hunkRangesMatch = changedLineIndex.valid &&
-                changedLineIndex.hunks.length === patches.length &&
-                patches.every((patch, index) => {
-                    const validatedHunk = changedLineIndex.hunks[index];
-                    return (validatedHunk.startLine === patch.startLine &&
-                        validatedHunk.endLine === patch.endLine);
-                });
-            if (!hunkRangesMatch) {
-                reviewsFailed.push(`${filename} (invalid or incomplete diff)`);
-                hunkCoverage.markFile(filename, 'failed_analysis');
-                return;
-            }
-            const contextResult = await retrieveReviewContext(contextProvider, {
-                repositoryId: `${repo.owner}/${repo.repo}`,
-                pullRequestNumber: context.payload.pull_request.number,
-                baseSha: context.payload.pull_request.base.sha,
-                headSha: context.payload.pull_request.head.sha,
-                changedFile: filename,
-                hunks: patches.map(patch => ({
-                    startLine: patch.startLine,
-                    endLine: patch.endLine,
-                    patch: patch.sourcePatch
-                }))
+        if (!options.disableReview) {
+            const summaryMap = new Map(summaries.map(([filename, , needsReview]) => [filename, needsReview]));
+            const filesAndChangesReview = activeFilesAndChanges.filter(([filename]) => {
+                if (fileCoverage.get(filename) === 'failed_analysis')
+                    return false;
+                return summaryMap.get(filename) ?? false;
             });
-            contextResults.push(contextResult);
-            ins.reviewContext = formatReviewContextForPrompt(contextResult);
-            // calculate tokens based on inputs so far
-            let tokens = (0,tokenizer/* getTokenCount */.N)(prompts.renderReviewFileDiff(ins));
-            // loop to calculate total patch tokens
-            let patchesToPack = 0;
-            for (const [index, patch] of patches.entries()) {
-                const patchTokens = (0,tokenizer/* getTokenCount */.N)(`---review_hunk id=h${index}---\n${patch.promptPatch}\n---end_change_section---`);
-                if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
-                    (0,core.info)(`only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`);
-                    break;
+            const reviewsSkipped = activeFilesAndChanges
+                .filter(([filename]) => fileCoverage.get(filename) !== 'failed_analysis' &&
+                !filesAndChangesReview.some(([reviewFilename]) => reviewFilename === filename))
+                .map(([filename]) => filename);
+            for (const filename of reviewsSkipped) {
+                if (fileCoverage.get(filename) === 'pending') {
+                    fileCoverage.set(filename, 'triaged_trivial');
+                    hunkCoverage.markFile(filename, 'triaged_trivial');
                 }
-                tokens += patchTokens;
-                patchesToPack += 1;
             }
-            if (patchesToPack < patches.length)
-                budgetSkipped.add(filename);
-            hunkCoverage.markPacked(filename, patchesToPack);
-            let patchesPacked = 0;
-            for (const patch of patches) {
-                const { startLine, endLine, promptPatch } = patch;
-                if (context.payload.pull_request == null) {
-                    (0,core.warning)('No pull request found, skipping.');
-                    continue;
+            // A file may be only partially packed when exceeding the model budget.
+            const budgetSkipped = new Set();
+            // failed reviews array
+            const reviewsFailed = [];
+            const contextResults = [];
+            let lgtmCount = 0;
+            let reviewCount = 0;
+            let modelFindingsCount = 0;
+            let publishableFindingsCount = 0;
+            let findingCapExceeded = false;
+            const fileHunkLimit = new Map();
+            const doReview = async (filename, fileDiff, patches) => {
+                const maxHunksForFile = fileHunkLimit.get(filename) ?? patches.length;
+                (0,core.info)('reviewing file');
+                // make a copy of inputs
+                const ins = inputs.clone();
+                ins.filename = filename;
+                const changedLineIndex = buildChangedLineIndex(fileDiff);
+                const hunkRangesMatch = changedLineIndex.valid &&
+                    changedLineIndex.hunks.length === patches.length &&
+                    patches.every((patch, index) => {
+                        const validatedHunk = changedLineIndex.hunks[index];
+                        return (validatedHunk.startLine === patch.startLine &&
+                            validatedHunk.endLine === patch.endLine);
+                    });
+                if (!hunkRangesMatch) {
+                    reviewsFailed.push(`${filename} (invalid or incomplete diff)`);
+                    hunkCoverage.markFile(filename, 'failed_analysis');
+                    return;
                 }
-                // see if we can pack more patches into this request
-                if (patchesPacked >= patchesToPack) {
-                    (0,core.info)(`unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`);
-                    if (options.debug)
-                        (0,core.info)('Review prompt exceeds token budget');
-                    break;
-                }
-                patchesPacked += 1;
-                let commentChain = '';
-                try {
-                    const allChains = await commenter.getCommentChainsWithinRange(context.payload.pull_request.number, filename, startLine, endLine, lib_commenter/* COMMENT_REPLY_TAG */.uH);
-                    if (allChains.length > 0) {
-                        (0,core.info)(`Found existing comment chains for ${filename}`);
-                        commentChain = allChains;
+                const contextResult = await retrieveReviewContext(contextProvider, {
+                    repositoryId: `${repo.owner}/${repo.repo}`,
+                    pullRequestNumber: context.payload.pull_request.number,
+                    baseSha: context.payload.pull_request.base.sha,
+                    headSha: context.payload.pull_request.head.sha,
+                    changedFile: filename,
+                    hunks: patches.map(patch => {
+                        const startLine = Math.max(1, patch.startLine);
+                        return {
+                            startLine,
+                            endLine: Math.max(startLine, patch.endLine),
+                            patch: patch.sourcePatch
+                        };
+                    })
+                });
+                contextResults.push(contextResult);
+                ins.reviewContext = formatReviewContextForPrompt(contextResult);
+                // calculate tokens based on inputs so far
+                let tokens = (0,tokenizer/* getTokenCount */.N)(prompts.renderReviewFileDiff(ins));
+                // loop to calculate total patch tokens
+                let patchesToPack = 0;
+                for (const [index, patch] of patches
+                    .slice(0, maxHunksForFile)
+                    .entries()) {
+                    const patchTokens = (0,tokenizer/* getTokenCount */.N)(`---review_hunk id=h${index}---\n${patch.promptPatch}\n---end_change_section---`);
+                    if (tokens + patchTokens > options.heavyTokenLimits.requestTokens) {
+                        (0,core.info)(`only packing ${patchesToPack} / ${patches.length} patches, tokens: ${tokens} / ${options.heavyTokenLimits.requestTokens}`);
+                        break;
                     }
+                    tokens += patchTokens;
+                    patchesToPack += 1;
                 }
-                catch (e) {
-                    (0,core.warning)('Failed to retrieve review comment chain (details withheld)');
-                }
-                // try packing comment_chain into this request
-                const commentChainTokens = (0,tokenizer/* getTokenCount */.N)(commentChain);
-                if (tokens + commentChainTokens >
-                    options.heavyTokenLimits.requestTokens) {
-                    commentChain = '';
-                }
-                else {
-                    tokens += commentChainTokens;
-                }
-                ins.patches += `
+                if (patchesToPack < patches.length)
+                    budgetSkipped.add(filename);
+                hunkCoverage.markPacked(filename, patchesToPack);
+                let patchesPacked = 0;
+                for (const patch of patches) {
+                    const { startLine, endLine, promptPatch } = patch;
+                    if (context.payload.pull_request == null) {
+                        (0,core.warning)('No pull request found, skipping.');
+                        continue;
+                    }
+                    // see if we can pack more patches into this request
+                    if (patchesPacked >= patchesToPack) {
+                        (0,core.info)(`unable to pack more patches into this request, packed: ${patchesPacked}, total patches: ${patches.length}, skipping.`);
+                        if (options.debug)
+                            (0,core.info)('Review prompt exceeds token budget');
+                        break;
+                    }
+                    patchesPacked += 1;
+                    let commentChain = '';
+                    try {
+                        const allChains = await commenter.getCommentChainsWithinRange(context.payload.pull_request.number, filename, startLine, endLine, lib_commenter/* COMMENT_REPLY_TAG */.uH);
+                        if (allChains.length > 0) {
+                            (0,core.info)('Found existing comment chains for file');
+                            commentChain = allChains;
+                        }
+                    }
+                    catch (e) {
+                        (0,core.warning)('Failed to retrieve review comment chain (details withheld)');
+                    }
+                    // try packing comment_chain into this request
+                    const commentChainTokens = (0,tokenizer/* getTokenCount */.N)(commentChain);
+                    if (tokens + commentChainTokens >
+                        options.heavyTokenLimits.requestTokens) {
+                        commentChain = '';
+                    }
+                    else {
+                        tokens += commentChainTokens;
+                    }
+                    ins.patches += `
 ---review_hunk id=h${patchesPacked - 1}---
 ${promptPatch}
 `;
-                if (commentChain !== '') {
-                    ins.patches += `
+                    if (commentChain !== '') {
+                        ins.patches += `
 ---comment_chains---
 \`\`\`
 ${commentChain}
 \`\`\`
 `;
-                }
-                ins.patches += `
+                    }
+                    ins.patches += `
 ---end_change_section---
 `;
-            }
-            if (patchesPacked > 0) {
-                // perform review
-                try {
-                    const [response] = await heavyBot.chat(prompts.renderReviewFileDiff(ins), {});
-                    if (response === '') {
-                        (0,core.info)('review: nothing obtained from openai');
-                        reviewsFailed.push(`${filename} (no response)`);
-                        hunkCoverage.markFile(filename, 'failed_analysis');
-                        return;
-                    }
-                    // Fail the entire file before publishing anything if the model
-                    // omits a hunk, invents a location or cites non-existent source.
-                    const structured = processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked);
-                    for (const finding of structured.comments) {
-                        await commenter.bufferReviewComment(filename, finding.startLine, finding.endLine, finding.message);
-                        reviewCount += 1;
-                    }
-                    for (const cleanHunk of structured.cleanHunks) {
-                        lgtmCount += 1;
-                        // Preserve the legacy opt-in LGTM inline comment behavior
-                        // when GitHub has an added/right-side anchor available.
-                        if (options.reviewCommentLGTM) {
-                            const line = changedLineIndex.hunks[cleanHunk].addedLines[0];
-                            if (line !== undefined) {
-                                await commenter.bufferReviewComment(filename, line, line, 'LGTM!');
+                }
+                if (patchesPacked > 0) {
+                    // perform review
+                    try {
+                        const [response] = await heavyBot.chat(prompts.renderReviewFileDiff(ins), {});
+                        if (response === '') {
+                            (0,core.info)('review: nothing obtained from openai');
+                            reviewsFailed.push(`${filename} (no response)`);
+                            hunkCoverage.markFile(filename, 'failed_analysis');
+                            return;
+                        }
+                        // Fail the entire file before publishing anything if the model
+                        // omits a hunk, invents a location or cites non-existent source.
+                        const structured = processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked);
+                        for (const finding of structured.comments) {
+                            modelFindingsCount += 1;
+                            if (modelFindingsCount > MAX_MODEL_FINDINGS) {
+                                findingCapExceeded = true;
+                                continue;
+                            }
+                            if (publishableFindingsCount < MAX_PUBLISHABLE_FINDINGS) {
+                                publishableFindingsCount += 1;
+                                await commenter.bufferReviewComment(filename, finding.startLine, finding.endLine, finding.message);
                                 reviewCount += 1;
                             }
                         }
+                        for (const cleanHunk of structured.cleanHunks) {
+                            lgtmCount += 1;
+                            // Preserve the legacy opt-in LGTM inline comment behavior
+                            // when GitHub has an added/right-side anchor available.
+                            if (options.reviewCommentLGTM) {
+                                const line = changedLineIndex.hunks[cleanHunk].addedLines[0];
+                                if (line !== undefined) {
+                                    await commenter.bufferReviewComment(filename, line, line, 'LGTM!');
+                                    reviewCount += 1;
+                                }
+                            }
+                        }
+                        for (const hunkIndex of structured.reviewedHunks) {
+                            hunkCoverage.mark(filename, hunkIndex, 'reviewed');
+                        }
                     }
-                    for (const hunkIndex of structured.reviewedHunks) {
-                        hunkCoverage.mark(filename, hunkIndex, 'reviewed');
+                    catch (e) {
+                        (0,core.warning)('Failed to validate review response (details withheld)');
+                        reviewsFailed.push(`${filename} (review failed)`);
+                        hunkCoverage.markFile(filename, 'failed_analysis');
                     }
+                    hunkCoverage.markUnacknowledged(filename, patchesPacked);
                 }
-                catch (e) {
-                    (0,core.warning)('Failed to validate review response (details withheld)');
-                    reviewsFailed.push(`${filename} (review failed)`);
-                    hunkCoverage.markFile(filename, 'failed_analysis');
+            };
+            let remainingHunkBudget = MAX_HUNKS_PER_PR;
+            const reviewQueue = [];
+            for (const [filename, fileDiff, patches] of filesAndChangesReview) {
+                if (remainingHunkBudget <= 0) {
+                    budgetSkipped.add(filename);
+                    hunkCoverage.markPacked(filename, 0);
+                    continue;
                 }
-                hunkCoverage.markUnacknowledged(filename, patchesPacked);
+                const allowedHunks = Math.min(patches.length, remainingHunkBudget);
+                remainingHunkBudget -= allowedHunks;
+                fileHunkLimit.set(filename, allowedHunks);
+                if (allowedHunks < patches.length) {
+                    budgetSkipped.add(filename);
+                    hunkCoverage.markPacked(filename, allowedHunks);
+                }
+                reviewQueue.push([filename, fileDiff, patches]);
             }
-            else {
-                reviewsSkipped.push(`${filename} (diff too large)`);
-            }
-        };
-        const reviewPromises = [];
-        for (const [filename, fileDiff, patches] of filesAndChangesReview) {
-            if (options.maxFiles <= 0 || reviewPromises.length < options.maxFiles) {
+            const reviewPromises = [];
+            for (const [filename, fileDiff, patches] of reviewQueue) {
                 reviewPromises.push(openaiConcurrencyLimit(async () => {
                     await doReview(filename, fileDiff, patches);
                 }));
             }
-            else {
-                skippedFiles.push(filename);
+            await Promise.all(reviewPromises);
+            statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`;
+            for (const [filename] of filesAndChangesReview) {
+                if (fileCoverage.get(filename) === 'failed_analysis')
+                    continue;
+                if (reviewsFailed.some(problem => problem.startsWith(`${filename} (`) ||
+                    problem.startsWith(`${filename} comment failed`))) {
+                    fileCoverage.set(filename, 'failed_analysis');
+                }
+                else if (budgetSkipped.has(filename)) {
+                    fileCoverage.set(filename, 'blocked_by_budget');
+                }
+                else if (fileCoverage.get(filename) === 'pending') {
+                    fileCoverage.set(filename, 'reviewed');
+                }
             }
-        }
-        await Promise.all(reviewPromises);
-        statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`;
-        for (const [filename] of filesAndChangesReview) {
-            if (fileCoverage.get(filename) === 'failed_analysis')
-                continue;
-            if (reviewsFailed.some(problem => problem.startsWith(`${filename} (`) ||
-                problem.startsWith(`${filename} comment failed`))) {
-                fileCoverage.set(filename, 'failed_analysis');
-            }
-            else if (skippedFiles.includes(filename) ||
-                budgetSkipped.has(filename)) {
-                fileCoverage.set(filename, 'blocked_by_budget');
-            }
-            else if (fileCoverage.get(filename) === 'pending') {
-                fileCoverage.set(filename, 'reviewed');
-            }
-        }
-        for (const filename of skippedFiles) {
-            if (fileCoverage.get(filename) === 'pending') {
-                fileCoverage.set(filename, 'blocked_by_budget');
-                hunkCoverage.markFile(filename, 'blocked_by_budget');
-            }
-        }
-        statusMsg += `
+            statusMsg += `
 ${reviewsFailed.length > 0
-            ? `<details>
+                ? `<details>
 <summary>Files not reviewed due to errors (${reviewsFailed.length})</summary>
 
 * ${reviewsFailed.join('\n* ')}
 
 </details>
 `
-            : ''}
+                : ''}
 ${reviewsSkipped.length > 0
-            ? `<details>
+                ? `<details>
 <summary>Files skipped from review due to trivial changes (${reviewsSkipped.length})</summary>
 
 * ${reviewsSkipped.join('\n* ')}
 
 </details>
 `
-            : ''}
+                : ''}
+${budgetSkipped.size > 0
+                ? `<details>
+<summary>Files skipped or partially reviewed due to token budget (${budgetSkipped.size})</summary>
+
+* ${[...budgetSkipped].join('\n* ')}
+
+</details>
+`
+                : ''}
 <details>
 <summary>Review comments generated (${reviewCount + lgtmCount})</summary>
 
@@ -7995,60 +8315,82 @@ ${reviewsSkipped.length > 0
 
 </details>
 `;
-        // Publishing is part of the transaction: a model response alone does
-        // not constitute a completed review. Never checkpoint partial coverage.
-        // Recheck immutable PR scope immediately before any inline publishing.
-        // If the PR changed while the LLM was running, its comments are stale.
-        let scopeFresh = false;
-        try {
-            const current = await octokit/* octokit */.A.pulls.get({
-                owner: repo.owner,
-                repo: repo.repo,
-                // eslint-disable-next-line camelcase
-                pull_number: context.payload.pull_request.number
-            });
-            scopeFresh =
-                current.data.head.sha === context.payload.pull_request.head.sha &&
-                    current.data.base.sha === context.payload.pull_request.base.sha;
-        }
-        catch (e) {
-            (0,core.warning)('Cannot verify current PR head (details withheld)');
-        }
-        if (!scopeFresh) {
-            (0,core.setFailed)('PR head/base changed or cannot be verified; refusing stale review publication');
-            return;
-        }
-        const published = await commenter.submitReview(context.payload.pull_request.number, context.payload.pull_request.head.sha, statusMsg);
-        const publishConfirmed = published && summariesFailed.length === 0 && reviewsFailed.length === 0;
-        const fileCompletion = assessReviewCompletion(files.map(file => file.filename), files.map(file => ({
-            id: file.filename,
-            status: fileCoverage.get(file.filename) ?? 'pending'
-        })), publishConfirmed);
-        const hunkSnapshot = hunkCoverage.snapshot();
-        const hunkCompletion = assessReviewCompletion(hunkSnapshot.expectedIds, hunkSnapshot.entries, publishConfirmed);
-        const completion = {
-            complete: fileCompletion.complete && hunkCompletion.complete,
-            blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
-        };
-        if (completion.complete) {
-            summarizeComment += `\n${commenter.addReviewedCommitId(existingCommitIdsBlock, context.payload.pull_request.head.sha)}\n${REVIEW_COMPLETE_TAG}\n${currentScopeMarker}`;
-        }
-        else {
-            // Keep only earlier successful checkpoint IDs, never add the new head.
-            if (existingCommitIdsBlock) {
-                summarizeComment += `\n${existingCommitIdsBlock}`;
-                if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
-                    summarizeComment += `\n${REVIEW_COMPLETE_TAG}`;
-                }
+            // Publishing is part of the transaction: a model response alone does
+            // not constitute a completed review. Never checkpoint partial coverage.
+            // Recheck immutable PR scope immediately before any inline publishing.
+            // If the PR changed while the LLM was running, its comments are stale.
+            let scopeFresh = false;
+            try {
+                const current = await octokit/* octokit */.A.pulls.get({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    // eslint-disable-next-line camelcase
+                    pull_number: context.payload.pull_request.number
+                });
+                scopeFresh =
+                    current.data.head.sha === context.payload.pull_request.head.sha &&
+                        current.data.base.sha === context.payload.pull_request.base.sha;
             }
-            summarizeComment += `\n> Partial review: latest head SHA not checkpointed
+            catch (e) {
+                (0,core.warning)('Cannot verify current PR head (details withheld)');
+            }
+            if (!scopeFresh) {
+                await clearInProgressOnAbort('PR head/base changed or cannot be verified; stale review aborted.');
+                (0,core.setFailed)('PR head/base changed or cannot be verified; refusing stale review publication');
+                return;
+            }
+            const inconclusive = summariesFailed.length > 0 ||
+                reviewsFailed.length > 0 ||
+                budgetSkipped.size > 0 ||
+                skippedFiles.length > 0 ||
+                findingCapExceeded ||
+                [...fileCoverage.values()].some(status => status === 'blocked_by_budget' ||
+                    status === 'failed_analysis' ||
+                    status === 'failed_publish' ||
+                    status === 'pending');
+            const publishReview = async () => {
+                if (inconclusive) {
+                    return false;
+                }
+                const published = await commenter.submitReview(context.payload.pull_request.number, context.payload.pull_request.head.sha, statusMsg);
+                return published;
+            };
+            const published = await publishReview();
+            const publishConfirmed = published && summariesFailed.length === 0 && reviewsFailed.length === 0;
+            const fileCompletion = assessReviewCompletion(files.map(file => file.filename), files.map(file => ({
+                id: file.filename,
+                status: fileCoverage.get(file.filename) ?? 'pending'
+            })), publishConfirmed);
+            const hunkSnapshot = hunkCoverage.snapshot();
+            const hunkCompletion = assessReviewCompletion(hunkSnapshot.expectedIds, hunkSnapshot.entries, publishConfirmed);
+            const completion = {
+                complete: fileCompletion.complete && hunkCompletion.complete,
+                blockers: [...fileCompletion.blockers, ...hunkCompletion.blockers]
+            };
+            if (completion.complete) {
+                summarizeComment += `\n${commenter.addReviewedCommitId(existingCommitIdsBlock, context.payload.pull_request.head.sha)}\n${REVIEW_COMPLETE_TAG}\n${currentScopeMarker}`;
+            }
+            else {
+                // Keep only earlier successful checkpoint IDs, never add the new head.
+                if (existingCommitIdsBlock) {
+                    summarizeComment += `\n${existingCommitIdsBlock}`;
+                    if (existingSummarizeCmtBody.includes(REVIEW_COMPLETE_TAG)) {
+                        summarizeComment += `\n${REVIEW_COMPLETE_TAG}`;
+                    }
+                }
+                summarizeComment += `\n> Partial review: latest head SHA not checkpointed
       (unprocessed or failed units: ${completion.blockers.length}).`;
-            (0,core.warning)(`Partial review: ${completion.blockers.join(', ')}`);
-            (0,core.setFailed)('Review incomplete; no latest-head checkpoint recorded');
+                (0,core.warning)(`Partial review: incomplete units (${completion.blockers.length})`);
+                (0,core.setFailed)('Review incomplete; no latest-head checkpoint recorded');
+            }
         }
+        // post the final summary comment
+        await commenter.comment(`${summarizeComment}`, lib_commenter/* SUMMARIZE_TAG */.Zs, 'replace');
     }
-    // post the final summary comment
-    await commenter.comment(`${summarizeComment}`, lib_commenter/* SUMMARIZE_TAG */.Zs, 'replace');
+    catch (error) {
+        await clearInProgressOnAbort('Review failed before completion; latest head SHA not checkpointed.');
+        throw error;
+    }
 };
 
 

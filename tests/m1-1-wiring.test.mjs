@@ -89,7 +89,7 @@ test('bad credentials and model setup fail the Action visibly', () => {
 
 
 test('review checkpoints are loaded only from authenticated bot comments', () => {
-  assert.match(publisher, /findTrustedTaggedComment\(comments, tag, 'github-actions\[bot\]'\)/)
+  assert.match(publisher, /findTrustedTaggedComment\(comments, tag, this\.botLogin\)/)
   assert.match(dedup, /comment\.user\?\.login === trustedLogin/)
 })
 

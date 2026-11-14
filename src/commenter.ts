@@ -52,6 +52,12 @@ export const COMMIT_ID_START_TAG = '<!-- commit_ids_reviewed_start -->'
 export const COMMIT_ID_END_TAG = '<!-- commit_ids_reviewed_end -->'
 
 export class Commenter {
+  private readonly botLogin: string
+
+  constructor(botLogin = 'github-actions[bot]') {
+    this.botLogin = botLogin
+  }
+
   /**
    * @param mode Can be "create", "replace". Default is "replace".
    */
@@ -257,7 +263,7 @@ ${COMMENT_TAG}`
         })
         return response.data
       },
-      'github-actions[bot]',
+      this.botLogin,
       COMMENT_TAG
     )
   }
@@ -406,15 +412,20 @@ ${COMMENT_REPLY_TAG}
     endLine: number
   ) {
     const comments = await this.listReviewComments(pullNumber)
-    return comments.filter(
-      (comment: any) =>
-        comment.path === path &&
-        comment.body !== '' &&
-        ((comment.start_line !== undefined &&
-          comment.start_line >= startLine &&
-          comment.line <= endLine) ||
-          (startLine === endLine && comment.line === endLine))
-    )
+    return comments.filter((comment: any) => {
+      if (
+        comment.path !== path ||
+        comment.body === '' ||
+        comment.line == null
+      ) {
+        return false
+      }
+      const cStart = comment.start_line ?? comment.line
+      return (
+        (cStart >= startLine && comment.line <= endLine) ||
+        (startLine === endLine && comment.line === endLine)
+      )
+    })
   }
 
   async getCommentsAtRange(
@@ -424,15 +435,20 @@ ${COMMENT_REPLY_TAG}
     endLine: number
   ) {
     const comments = await this.listReviewComments(pullNumber)
-    return comments.filter(
-      (comment: any) =>
-        comment.path === path &&
-        comment.body !== '' &&
-        ((comment.start_line !== undefined &&
-          comment.start_line === startLine &&
-          comment.line === endLine) ||
-          (startLine === endLine && comment.line === endLine))
-    )
+    return comments.filter((comment: any) => {
+      if (
+        comment.path !== path ||
+        comment.body === '' ||
+        comment.line == null
+      ) {
+        return false
+      }
+      const cStart = comment.start_line ?? comment.line
+      return (
+        (cStart === startLine && comment.line === endLine) ||
+        (startLine === endLine && comment.line === endLine)
+      )
+    })
   }
 
   async getCommentChainsWithinRange(
@@ -557,7 +573,7 @@ ${chain}
       return allComments
     } catch (e) {
       warning(`Failed to list review comments: ${e}`)
-      return allComments
+      throw e
     }
   }
 
@@ -609,7 +625,7 @@ ${chain}
       // HTML markers are not authentication: a PR author can forge them.
       // Only metadata-authenticated comments from our publishing identity
       // are allowed to supply review state or be replaced by the bot.
-      return findTrustedTaggedComment(comments, tag, 'github-actions[bot]')
+      return findTrustedTaggedComment(comments, tag, this.botLogin)
     } catch (e: unknown) {
       warning(`Failed to find comment with tag: ${e}`)
       throw e
@@ -710,6 +726,7 @@ ${chain}
   async getAllCommitIds(): Promise<string[]> {
     const allCommits = []
     let page = 1
+    const maxPages = 100
     let commits
     if (context && context.payload && context.payload.pull_request != null) {
       do {
@@ -725,7 +742,7 @@ ${chain}
 
         allCommits.push(...commits.data.map(commit => commit.sha))
         page++
-      } while (commits.data.length > 0)
+      } while (commits.data.length === 100 && page <= maxPages)
     }
 
     return allCommits

@@ -66,42 +66,42 @@ export class Inputs {
       return ''
     }
     if (this.systemMessage) {
-      content = content.replace('$system_message', this.systemMessage)
+      content = content.replaceAll('$system_message', () => this.systemMessage)
     }
     if (this.title) {
-      content = content.replace('$title', this.title)
+      content = content.replaceAll('$title', () => this.title)
     }
     if (this.description) {
-      content = content.replace('$description', this.description)
+      content = content.replaceAll('$description', () => this.description)
     }
     if (this.rawSummary) {
-      content = content.replace('$raw_summary', this.rawSummary)
+      content = content.replaceAll('$raw_summary', () => this.rawSummary)
     }
     if (this.shortSummary) {
-      content = content.replace('$short_summary', this.shortSummary)
+      content = content.replaceAll('$short_summary', () => this.shortSummary)
     }
     if (this.filename) {
-      content = content.replace('$filename', this.filename)
+      content = content.replaceAll('$filename', () => this.filename)
     }
     if (this.fileContent) {
-      content = content.replace('$file_content', this.fileContent)
+      content = content.replaceAll('$file_content', () => this.fileContent)
     }
     if (this.fileDiff) {
-      content = content.replace('$file_diff', this.fileDiff)
+      content = content.replaceAll('$file_diff', () => this.fileDiff)
     }
     if (this.patches) {
-      content = content.replace('$patches', this.patches)
+      content = content.replaceAll('$patches', () => this.patches)
     }
     if (this.diff) {
-      content = content.replace('$diff', this.diff)
+      content = content.replaceAll('$diff', () => this.diff)
     }
     if (this.commentChain) {
-      content = content.replace('$comment_chain', this.commentChain)
+      content = content.replaceAll('$comment_chain', () => this.commentChain)
     }
     if (this.comment) {
-      content = content.replace('$comment', this.comment)
+      content = content.replaceAll('$comment', () => this.comment)
     }
-    content = content.replace('$review_context', () => this.reviewContext)
+    content = content.replaceAll('$review_context', () => this.reviewContext)
     return content
   }
 }

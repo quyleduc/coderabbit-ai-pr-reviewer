@@ -1,5 +1,9 @@
 name: 'Combine PRs'
 
+permissions:
+  contents: write
+  pull-requests: write
+
 # Controls when the action will run - in this case triggered manually
 on:
   workflow_dispatch:
@@ -32,15 +36,21 @@ jobs:
     steps:
       - name: Set variables
         env:
+          INPUT_BRANCH_PREFIX: ${{ github.event.inputs.branchPrefix }}
+          INPUT_MUST_BE_GREEN: ${{ github.event.inputs.mustBeGreen }}
+          INPUT_COMBINE_BRANCH_NAME: ${{ github.event.inputs.combineBranchName }}
+          INPUT_IGNORE_LABEL: ${{ github.event.inputs.ignoreLabel }}
           DEFAULT_BRANCH_PREFIX: dependabot
-          DEFAULT_MUST_BE_GREEN: true
+          DEFAULT_MUST_BE_GREEN: 'true'
           DEFAULT_COMBINE_BRANCH_NAME: combine-prs-branch
           DEFAULT_IGNORE_LABEL: nocombine
         run: |
-          echo "BRANCH_PREFIX=${{ github.event.inputs.branchPrefix || env.DEFAULT_BRANCH_PREFIX }}" >> $GITHUB_ENV
-          echo "MUST_BE_GREEN=${{ github.event.inputs.mustBeGreen || env.DEFAULT_MUST_BE_GREEN }}" >> $GITHUB_ENV
-          echo "COMBINE_BRANCH_NAME=${{ github.event.inputs.combineBranchName || env.DEFAULT_COMBINE_BRANCH_NAME }}" >> $GITHUB_ENV
-          echo "IGNORE_LABEL=${{ github.event.inputs.ignoreLabel || env.DEFAULT_IGNORE_LABEL }}" >> $GITHUB_ENV
+          {
+            printf 'BRANCH_PREFIX=%s\n' "${INPUT_BRANCH_PREFIX:-$DEFAULT_BRANCH_PREFIX}"
+            printf 'MUST_BE_GREEN=%s\n' "${INPUT_MUST_BE_GREEN:-$DEFAULT_MUST_BE_GREEN}"
+            printf 'COMBINE_BRANCH_NAME=%s\n' "${INPUT_COMBINE_BRANCH_NAME:-$DEFAULT_COMBINE_BRANCH_NAME}"
+            printf 'IGNORE_LABEL=%s\n' "${INPUT_IGNORE_LABEL:-$DEFAULT_IGNORE_LABEL}"
+          } >> "$GITHUB_ENV"
 
       - uses: actions/github-script@v6
         id: fetch-branch-names
@@ -57,14 +67,25 @@ jobs:
             branches = {};
 
             base_branch = null;
+            const branchPrefix = process.env.BRANCH_PREFIX || 'dependabot';
+            const mustBeGreen = process.env.MUST_BE_GREEN === 'true';
+            const ignoreLabel = process.env.IGNORE_LABEL || 'nocombine';
+
             for (const pull of pulls)
             {
+              if (
+                !pull.head.repo ||
+                !pull.base.repo ||
+                pull.head.repo.full_name !== pull.base.repo.full_name
+              ) {
+                continue;
+              }
               const branch = pull['head']['ref'];
               console.log('Pull for branch: ' + branch);
-              if (branch.startsWith('${{ env.BRANCH_PREFIX }}')) {
+              if (branch.startsWith(branchPrefix)) {
                 console.log('Branch matched: ' + branch);
                 statusOK = true;
-                if(${{ env.MUST_BE_GREEN}}) {
+                if (mustBeGreen) {
                   console.log('Checking green status: ' + branch);
                   const statuses = await github.paginate('GET /repos/{owner}/{repo}/commits/{ref}/status', {
                     owner: context.repo.owner,
@@ -85,7 +106,7 @@ jobs:
                 for(const label of labels) {
                   const labelName = label['name'];
                   console.log('Checking label: ' + labelName);
-                  if(labelName == '${{ env.IGNORE_LABEL }}') {
+                  if(labelName == ignoreLabel) {
                     console.log('Discarding ' + branch + ' with label ' + labelName);
                     statusOK = false;
                   }
@@ -156,20 +177,20 @@ jobs:
             git config user.name github-actions
             git config user.email github-actions@users.noreply.github.com
 
-            git checkout $basebranch
-            git checkout -b $name
+            git checkout -- "$basebranch"
+            git checkout -b "$name"
 
             prs_list=""
             for branch in ${sourcebranches[@]}; do
-                if git pull origin $branch --no-ff --no-commit; then
+                if git pull --no-ff --no-commit origin -- "$branch"; then
                   git commit --no-edit
 
-                  if pr_view=$(gh pr view $branch); then
+                  if pr_view=$(gh pr view -- "$branch"); then
                     title=$(echo "$pr_view" | sed -nE 's/^title:\s(.*)$/\1/p')
                     number=$(echo "$pr_view" | sed -nE 's/^number:\s(.*)$/\1/p')
                     desc='#'"$number $title"$'\n'
                     prs_list="$prs_list$desc"
-                    gh pr close $branch -d
+                    gh pr close -d -- "$branch"
                   fi
 
                 else
@@ -177,7 +198,7 @@ jobs:
                 fi
             done
 
-            git push origin $name
+            git push origin -- "$name"
             i=$(( i + 1 ))
 
             if [ -z "$prs_list" ]; then
@@ -186,5 +207,5 @@ jobs:
 
             prs_string="This PR was created by the Combine PRs action by combining the following PRs:"$'\n'"${prs_list}"
             title="Combined PR from dependabot's branch $name"
-            gh pr create --base $basebranch --head $name --title "$title" --body "$prs_string"
+            gh pr create --base "$basebranch" --head "$name" --title "$title" --body "$prs_string"
           done
