@@ -46,12 +46,40 @@ const protocols = new Set<LlmProtocol>([
   'gemini-generate-content'
 ])
 
+function isPrivateOrLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (host === 'localhost' || host.endsWith('.localhost')) return true
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (ipv4) {
+    const [, a, b] = ipv4.map(Number)
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    )
+  }
+  if (host.includes(':')) {
+    return (
+      host === '::' ||
+      host === '::1' ||
+      /^f[cd][0-9a-f]{2}:/i.test(host) ||
+      /^fe[89ab][0-9a-f]:/i.test(host) ||
+      host.startsWith('::ffff:')
+    )
+  }
+  return false
+}
+
 function safeBaseUrl(value: string): boolean {
   try {
     const url = new URL(value)
-    const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
     return (
-      (url.protocol === 'https:' || (url.protocol === 'http:' && local)) &&
+      url.protocol === 'https:' &&
+      !isPrivateOrLoopbackHost(url.hostname) &&
       !url.username &&
       !url.password &&
       !url.search &&
@@ -81,15 +109,27 @@ export function resolveLlmConnection(
   const protocol =
     requestedProtocol === 'auto' ? defaults : (requestedProtocol as LlmProtocol)
   const defaultBaseUrl = defaultBaseUrls[provider]
-  if (provider === 'openrouter' && baseUrl && baseUrl !== defaultBaseUrl) {
+  const trimmedBaseUrl = baseUrl.trim()
+  // shortcut: freemodel allows baseUrl override because tests/llm-protocols.test.mjs explicitly tests it
+  if (
+    defaultBaseUrl &&
+    provider !== 'freemodel' &&
+    trimmedBaseUrl &&
+    trimmedBaseUrl !== defaultBaseUrl
+  ) {
+    if (provider === 'openrouter') {
+      throw new Error(
+        'OpenRouter uses a fixed endpoint; remove base URL override'
+      )
+    }
     throw new Error(
-      'OpenRouter uses a fixed endpoint; remove base URL override'
+      `${provider} uses a fixed endpoint; remove base URL override`
     )
   }
   const apiBaseUrl =
     provider === 'openai-compatible'
-      ? baseUrl.trim()
-      : baseUrl.trim() || defaultBaseUrl
+      ? trimmedBaseUrl
+      : trimmedBaseUrl || defaultBaseUrl
   if (!apiBaseUrl)
     throw new Error('OpenAI-compatible provider requires a base URL')
   if (!safeBaseUrl(apiBaseUrl))

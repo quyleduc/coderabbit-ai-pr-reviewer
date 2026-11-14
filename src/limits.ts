@@ -27,8 +27,8 @@ export class TokenLimits {
       this.maxTokens = 8000
       this.responseTokens = 2000
     } else {
-      this.maxTokens = 4000
-      this.responseTokens = 1000
+      this.maxTokens = 32000
+      this.responseTokens = 4096
     }
     // provide some margin for the request tokens
     this.requestTokens = this.maxTokens - this.responseTokens - 100

@@ -1,9 +1,13 @@
 // eslint-disable-next-line import/extensions
 import type {LlmConnection, LlmProtocol} from './llm-provider.ts'
+import {
+  isPrivateOrLinkLocalIp,
+  readBoundedJson,
+  requestResponsesText
+  // eslint-disable-next-line import/extensions
+} from './responses-client.ts'
 // eslint-disable-next-line import/extensions
-import {requestResponsesText} from './responses-client.ts'
-// eslint-disable-next-line import/extensions
-import type {ResponsesRequest} from './responses-client.ts'
+import type {FetchResponseLike, ResponsesRequest} from './responses-client.ts'
 
 export interface LlmTextRequest extends LlmConnection {
   model: string
@@ -37,6 +41,7 @@ function baseUrl(value: string): URL {
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   if (
     !(url.protocol === 'https:' || (url.protocol === 'http:' && local)) ||
+    isPrivateOrLinkLocalIp(url.hostname) ||
     url.username ||
     url.password ||
     url.search ||
@@ -68,17 +73,26 @@ async function postJson(
   body: string,
   options: Pick<
     LlmTextRequest,
-    'fetcher' | 'delay' | 'timeoutMs' | 'retries' | 'retryRateLimits'
-  >
-): Promise<unknown> {
+    | 'fetcher'
+    | 'delay'
+    | 'timeoutMs'
+    | 'retries'
+    | 'retryRateLimits'
+    | 'retryEmptyOutput'
+  >,
+  // eslint-disable-next-line no-unused-vars
+  extractText: (raw: unknown) => string
+): Promise<string> {
   const fetcher = options.fetcher ?? fetch
   const delay = options.delay ?? pause
   const timeoutMs = options.timeoutMs ?? 120000
   const retries = options.retries ?? 2
   const retryRateLimits = options.retryRateLimits ?? true
+  const retryEmptyOutput = options.retryEmptyOutput ?? false
+  let retriedEmpty = false
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    let response: Awaited<ReturnType<NonNullable<typeof options.fetcher>>>
+    let response: FetchResponseLike
     try {
       response = await fetcher(url, {
         method: 'POST',
@@ -116,10 +130,39 @@ async function postJson(
       }
       throw new Error(`LLM HTTP ${response.status}`)
     }
+    let decoded: unknown
     try {
-      return await response.json()
-    } catch {
-      throw new Error('LLM response contains invalid JSON')
+      decoded = await readBoundedJson(
+        response,
+        'LLM response exceeds size limit'
+      )
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('LLM response contains invalid JSON')
+      }
+      if (
+        error instanceof Error &&
+        error.message === 'LLM response exceeds size limit'
+      ) {
+        throw error
+      }
+      if (attempt < retries) {
+        await delay(Math.min(1000 * 2 ** attempt, 10000))
+        continue
+      }
+      throw new Error('LLM request failed after configured retries')
+    }
+    try {
+      return extractText(decoded)
+    } catch (error) {
+      const empty =
+        error instanceof Error && / response is empty$/.test(error.message)
+      if (retryEmptyOutput && empty && !retriedEmpty && attempt < retries) {
+        retriedEmpty = true
+        await delay(Math.min(1000 * 2 ** attempt, 10000))
+        continue
+      }
+      throw error
     }
   }
   throw new Error('LLM request failed after configured retries')
@@ -168,6 +211,12 @@ function validateRequest(request: LlmTextRequest): void {
     typeof request.retryRateLimits !== 'boolean'
   ) {
     throw new Error('Invalid rate-limit retry setting')
+  }
+  if (
+    typeof request.retryEmptyOutput !== 'undefined' &&
+    typeof request.retryEmptyOutput !== 'boolean'
+  ) {
+    throw new Error('Invalid empty-output retry setting')
   }
 }
 
@@ -281,13 +330,13 @@ async function requestChatCompletions(
         {reasoning_effort: request.reasoningEffort}),
     stream: false
   }
-  const raw = await postJson(
+  return postJson(
     endpoint(baseUrl(request.apiBaseUrl), 'chat/completions'),
     headers,
     JSON.stringify(body),
-    request
+    request,
+    chatText
   )
-  return chatText(raw)
 }
 
 async function requestAnthropicMessages(
@@ -310,13 +359,13 @@ async function requestAnthropicMessages(
     // eslint-disable-next-line camelcase
     max_tokens: request.maxOutputTokens ?? 2048
   }
-  const raw = await postJson(
+  return postJson(
     endpoint(baseUrl(request.apiBaseUrl), 'messages'),
     headers,
     JSON.stringify(body),
-    request
+    request,
+    anthropicText
   )
-  return anthropicText(raw)
 }
 
 async function requestGeminiGenerateContent(
@@ -342,16 +391,16 @@ async function requestGeminiGenerateContent(
     contents: [{role: 'user', parts: [{text: request.prompt}]}],
     generationConfig: {maxOutputTokens: request.maxOutputTokens ?? 2048}
   }
-  const raw = await postJson(
+  return postJson(
     endpoint(
       baseUrl(request.apiBaseUrl),
       `models/${encodeURIComponent(model)}:generateContent`
     ),
     headers,
     JSON.stringify(body),
-    request
+    request,
+    geminiText
   )
-  return geminiText(raw)
 }
 
 /** Routes normalized review text through one of the supported wire protocols. */

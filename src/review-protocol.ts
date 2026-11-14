@@ -66,6 +66,17 @@ function addedSourceLines(diff: string): {
   return {texts, hunks}
 }
 
+function sanitizeFindingMessage(raw: string): string {
+  return raw
+    .trim()
+    .replace(
+      /!?\[([^\]]*)\]\(\s*(?:https?:|\/\/|data:|javascript:)[^)]*\)/gi,
+      '$1'
+    )
+    .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
+    .replace(/@([a-zA-Z0-9_-]+)/g, '$1')
+}
+
 /**
  * Strict model-to-publisher contract:
  * - exactly one verdict per packed hunk (no silent missing coverage)
@@ -170,12 +181,16 @@ export function processStructuredReview(
       ) {
         throw new Error('Invalid finding message')
       }
+      const sanitizedMessage = sanitizeFindingMessage(finding.message)
+      if (sanitizedMessage.length < 8) {
+        throw new Error('Invalid finding message')
+      }
       comments.push({
         startLine: line,
         endLine: line,
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
-        }**\n\n${finding.message.trim()}`
+        }**\n\n${sanitizedMessage}`
       })
     }
   }

@@ -2,6 +2,20 @@
  * Used by both the production Bot and the controlled fixture evaluator.
  * Provider errors/prompt text are NEVER included in thrown errors.
  */
+const MAX_HTTP_BODY_BYTES = 262144 + 65536
+
+export interface FetchResponseLike {
+  ok: boolean
+  status: number
+  headers?: {
+    // eslint-disable-next-line no-unused-vars
+    get?: (name: string) => string | null
+  }
+  text?: () => Promise<string>
+  body?: ReadableStream<Uint8Array> | null
+  json: () => Promise<unknown>
+}
+
 export interface ResponsesRequest {
   apiKey: string
   model: string
@@ -23,11 +37,7 @@ export interface ResponsesRequest {
     url: string,
     // eslint-disable-next-line no-unused-vars
     init: RequestInit
-  ) => Promise<{
-    ok: boolean
-    status: number
-    json: () => Promise<unknown>
-  }>
+  ) => Promise<FetchResponseLike>
   delay?: (
     // eslint-disable-next-line no-unused-vars
     ms: number
@@ -40,6 +50,99 @@ function fields(value: unknown): Record<string, unknown> | null {
     : null
 }
 
+export function isPrivateOrLinkLocalIp(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/g, '').toLowerCase()
+  if (host === 'localhost' || host === '127.0.0.1' || host === '::1') {
+    return false
+  }
+  const ipv4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host)
+  if (ipv4) {
+    const a = Number(ipv4[1])
+    const b = Number(ipv4[2])
+    return (
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 100 && b >= 64 && b <= 127)
+    )
+  }
+  if (host.includes(':')) {
+    return (
+      host === '::' ||
+      host === '0:0:0:0:0:0:0:0' ||
+      host.startsWith('::ffff:') ||
+      /^f[cd][0-9a-f]{2}:/.test(host) ||
+      /^fe[89ab][0-9a-f]:/.test(host)
+    )
+  }
+  return false
+}
+
+export async function readBoundedJson(
+  response: FetchResponseLike,
+  sizeLimitMessage: string
+): Promise<unknown> {
+  if (typeof response.headers?.get === 'function') {
+    const rawLength = response.headers.get('content-length')
+    if (rawLength !== null) {
+      const contentLength = Number(rawLength)
+      if (
+        Number.isFinite(contentLength) &&
+        contentLength > MAX_HTTP_BODY_BYTES
+      ) {
+        if (response.body && typeof response.body.cancel === 'function') {
+          try {
+            await response.body.cancel()
+          } catch {
+            // ignore stream cancel errors on oversized response
+          }
+        }
+        throw new Error(sizeLimitMessage)
+      }
+    }
+  }
+  if (response.body && typeof response.body.getReader === 'function') {
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let totalBytes = 0
+    let text = ''
+    try {
+      for (;;) {
+        const {done, value} = await reader.read()
+        if (done) break
+        totalBytes += value.byteLength
+        if (totalBytes > MAX_HTTP_BODY_BYTES) {
+          try {
+            await reader.cancel()
+          } catch {
+            // ignore stream cancel errors on oversized response
+          }
+          throw new Error(sizeLimitMessage)
+        }
+        text += decoder.decode(value, {stream: true})
+      }
+      text += decoder.decode()
+    } finally {
+      reader.releaseLock()
+    }
+    return JSON.parse(text)
+  }
+  if (typeof response.text === 'function') {
+    const text = await response.text()
+    if (
+      text.length > MAX_HTTP_BODY_BYTES ||
+      Buffer.byteLength(text, 'utf8') > MAX_HTTP_BODY_BYTES
+    ) {
+      throw new Error(sizeLimitMessage)
+    }
+    return JSON.parse(text)
+  }
+  return response.json()
+}
+
 function responsesEndpoint(baseUrl: string): string {
   let url: URL
   try {
@@ -50,6 +153,7 @@ function responsesEndpoint(baseUrl: string): string {
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
   if (
     !(url.protocol === 'https:' || (url.protocol === 'http:' && local)) ||
+    isPrivateOrLinkLocalIp(url.hostname) ||
     url.username ||
     url.password ||
     url.hash ||
@@ -172,7 +276,7 @@ export async function requestResponsesText({
   if (
     typeof model !== 'string' ||
     model.length < 2 ||
-    model.length > 90 ||
+    model.length > 200 ||
     !/^[A-Za-z0-9][A-Za-z0-9_.:-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.:-]*)?$/.test(
       model
     )
@@ -228,7 +332,7 @@ export async function requestResponsesText({
   })
 
   for (let attempt = 0; attempt <= retries; attempt++) {
-    let response: {ok: boolean; status: number; json: () => Promise<unknown>}
+    let response: FetchResponseLike
     try {
       response = await fetcher(endpoint, {
         method: 'POST',
@@ -268,9 +372,25 @@ export async function requestResponsesText({
     }
     let decoded: unknown
     try {
-      decoded = await response.json()
-    } catch {
-      throw new Error('Invalid OpenAI response JSON')
+      decoded = await readBoundedJson(
+        response,
+        'OpenAI response exceeds size limit'
+      )
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw new Error('Invalid OpenAI response JSON')
+      }
+      if (
+        error instanceof Error &&
+        error.message === 'OpenAI response exceeds size limit'
+      ) {
+        throw error
+      }
+      if (attempt < retries) {
+        await delay(Math.min(1000 * 2 ** attempt, 10000))
+        continue
+      }
+      throw new Error('OpenAI request failed after configured retries')
     }
     try {
       return readOutput(decoded)

@@ -60,7 +60,7 @@ export const parsePatch = (
   const newHunkLines: string[] = []
   let newLine = hunkInfo.newHunk.startLine
 
-  const lines = patch.split('\n').slice(1)
+  const lines = patch.split(/\r?\n/).slice(1)
   if (lines[lines.length - 1] === '') lines.pop()
 
   // This marker is metadata about the preceding line, not a source line.

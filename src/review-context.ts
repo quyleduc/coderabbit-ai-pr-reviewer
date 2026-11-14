@@ -460,7 +460,10 @@ export async function retrieveReviewContext(
         controller.signal,
         MAX_PROVIDER_CANDIDATES
       )
-    const response = await Promise.race([collection(), timeout])
+    const collectionPromise = collection()
+    // eslint-disable-next-line github/no-then
+    collectionPromise.catch(() => undefined)
+    const response = await Promise.race([collectionPromise, timeout])
     if (response === timeoutMarker) {
       controller.abort()
       return result('unavailable', ['provider_timeout'])
@@ -541,7 +544,7 @@ export async function retrieveReviewContext(
     }
     if (!files.has(candidate.path) && files.size >= limits.maxFiles) {
       stopReason = 'max_files'
-      break
+      continue
     }
 
     const snippet = {
