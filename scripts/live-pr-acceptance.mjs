@@ -7,6 +7,7 @@ import {planReviewPublication, loadTrustedPublishedBodies} from '../src/review-d
 import {publishReviewBatch} from '../src/review-publication.ts'
 import {buildFixturePrompt, requestModelResponse} from './controlled-model-eval.mjs'
 import {resolveLlmConnection} from '../src/llm-provider.ts'
+import {classifyShadowFailure} from '../src/shadow-errors.ts'
 
 const TRUSTED_BOT = 'github-actions[bot]'
 const SHA = /^[a-f0-9]{40}$/i
@@ -266,8 +267,8 @@ async function main() {
 if (process.argv[1] && import.meta.url===pathToFileURL(process.argv[1]).href) {
   try{
     await main()
-  }catch{
-    console.error('Controlled PR acceptance failed; no success is claimed (details redacted)')
+  }catch(err){
+    console.error('Controlled PR acceptance failed; no success is claimed:', classifyShadowFailure(err))
     process.exitCode=1
   }
 }
