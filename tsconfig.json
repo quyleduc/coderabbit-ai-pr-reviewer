@@ -12,6 +12,7 @@
     "module": "ESNext",
     "outDir": "./lib",
     "rootDir": "./src",
+    "skipLibCheck": true,
     "strict": true,
     "noImplicitAny": true,
     "esModuleInterop": true
