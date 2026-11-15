@@ -1,8 +1,7 @@
 import {readFileSync} from 'node:fs'
 import {posix} from 'node:path'
-// Export map is resolved by TypeScript and Node but not by the old eslint resolver.
-// eslint-disable-next-line import/no-unresolved
-import {Language, Parser, type Node} from 'web-tree-sitter'
+import type {Node, Parser} from 'web-tree-sitter'
+import treeSitter from './tree-sitter.cjs'
 import type {
   ReviewContextCandidate,
   ReviewContextProvider,
@@ -77,8 +76,9 @@ export function createGithubFileFetcher(
 }
 
 export async function loadCParser(grammarWasmPath: string): Promise<Parser> {
-  await Parser.init()
-  const parser = new Parser()
+  const {Language, Parser: ParserImpl} = treeSitter
+  await ParserImpl.init()
+  const parser: Parser = new ParserImpl()
   parser.setLanguage(await Language.load(readFileSync(grammarWasmPath)))
   return parser
 }
