@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
 import {
   processStructuredReview,
-  sanitizeFindingMessage
+  sanitizeFindingMessage,
+  selectTopFindings
 } from '../src/review-protocol.ts'
 import {planReviewPublication} from '../src/review-dedup.ts'
 import {publishReviewBatch} from '../src/review-publication.ts'
@@ -176,4 +177,31 @@ test('sanitizeFindingMessage requires matching backtick run lengths for code spa
   const validNested = sanitizeFindingMessage('Use ``a ` b`` and @bob')
   assert.match(validNested, /``a ` b``/)
   assert.doesNotMatch(validNested, /@bob/)
+})
+
+test('accepts plain fenced JSON without json tag while still rejecting untrusted prose', () => {
+  const plainFence = '```\n' + JSON.stringify({version: 1, hunks: [clean, issue]}) + '\n```'
+  const verified = processStructuredReview(plainFence, index, patch, 2)
+  assert.equal(verified.comments.length, 1)
+  assert.equal(verified.comments[0].severity, 'high')
+  assert.throws(
+    () => processStructuredReview('Here is the JSON:\n' + plainFence, index, patch, 2),
+    /one valid JSON/
+  )
+})
+
+test('selectTopFindings prioritizes high > medium > low deterministically and counts omitted', () => {
+  const candidates = [
+    {path: 'z.c', startLine: 1, endLine: 1, severity: 'low', message: 'l1'},
+    {path: 'a.c', startLine: 5, endLine: 5, severity: 'medium', message: 'm1'},
+    {path: 'b.c', startLine: 2, endLine: 2, severity: 'high', message: 'h2'},
+    {path: 'a.c', startLine: 10, endLine: 10, severity: 'high', message: 'h1'},
+    {path: 'c.c', startLine: 1, endLine: 1, severity: 'medium', message: 'm2'}
+  ]
+  const {selected, omitted} = selectTopFindings(candidates, 3)
+  assert.equal(omitted, 2)
+  assert.deepEqual(
+    selected.map(item => item.message),
+    ['h1', 'h2', 'm1']
+  )
 })

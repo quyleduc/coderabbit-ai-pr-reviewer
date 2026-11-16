@@ -1,8 +1,11 @@
 import type {ChangedLineIndex} from './diff-hunks'
 
+export type FindingSeverity = 'high' | 'medium' | 'low'
+
 export interface StructuredReviewComment {
   startLine: number
   endLine: number
+  severity: FindingSeverity
   message: string
 }
 
@@ -34,7 +37,7 @@ function parseJsonResponse(text: string): unknown {
   if (text.length > 262144)
     throw new Error('Review protocol exceeds response size limit')
   let raw = text.trim()
-  const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw)
+  const fenced = /^\x60{3}(?:json)?\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw)
   if (fenced) raw = fenced[1]
   try {
     return JSON.parse(raw) as unknown
@@ -240,6 +243,7 @@ export function processStructuredReview(
       comments.push({
         startLine: line,
         endLine: line,
+        severity: finding.severity,
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
         }**\n\n${sanitizedMessage}`
@@ -251,4 +255,31 @@ export function processStructuredReview(
     cleanHunks: cleanHunks.sort((a, b) => a - b),
     comments
   }
+}
+
+const SEVERITY_RANK: Record<FindingSeverity, number> = {
+  high: 0,
+  medium: 1,
+  low: 2
+}
+
+export function selectTopFindings<
+  T extends {
+    path: string
+    startLine: number
+    endLine: number
+    severity: FindingSeverity
+    message: string
+  }
+>(findings: readonly T[], cap: number): {selected: T[]; omitted: number} {
+  const sorted = [...findings].sort(
+    (a, b) =>
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) ||
+      a.startLine - b.startLine ||
+      a.endLine - b.endLine ||
+      (a.message < b.message ? -1 : a.message > b.message ? 1 : 0)
+  )
+  const selected = sorted.slice(0, Math.max(0, cap))
+  return {selected, omitted: Math.max(0, sorted.length - selected.length)}
 }

@@ -6542,10 +6542,10 @@ $comment
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(_actions_core__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _actions_github__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(722);
 /* harmony import */ var _commenter__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(2615);
-/* harmony import */ var _inputs__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(6107);
+/* harmony import */ var _inputs__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(6107);
 /* harmony import */ var _octokit__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(1150);
-/* harmony import */ var _review_protocol__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(3123);
-/* harmony import */ var _tokenizer__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(7134);
+/* harmony import */ var _review_protocol__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(3123);
+/* harmony import */ var _tokenizer__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(7134);
 
 // eslint-disable-next-line camelcase
 
@@ -6569,7 +6569,7 @@ const repo = context.repo;
 const ASK_BOT = '@coderabbitai';
 const handleReviewComment = async (heavyBot, options, prompts) => {
     const commenter = new _commenter__WEBPACK_IMPORTED_MODULE_2__/* .Commenter */ .n1();
-    const inputs = new _inputs__WEBPACK_IMPORTED_MODULE_5__/* .Inputs */ .G();
+    const inputs = new _inputs__WEBPACK_IMPORTED_MODULE_6__/* .Inputs */ .G();
     if (context.eventName !== 'pull_request_review_comment') {
         (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.warning)(`Skipped: ${context.eventName} is not a pull_request_review_comment event`);
         return;
@@ -6650,7 +6650,7 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
                 }
             }
             // get tokens so far
-            let tokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_4__/* .getTokenCount */ .N)(prompts.renderComment(inputs));
+            let tokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_5__/* .getTokenCount */ .N)(prompts.renderComment(inputs));
             if (tokens > options.heavyTokenLimits.requestTokens) {
                 await commenter.reviewCommentReply(pullNumber, topLevelComment, 'Cannot reply to this comment as diff being commented is too large and exceeds the token limit.');
                 return;
@@ -6659,7 +6659,7 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
             if (fileDiff.length > 0) {
                 // count occurrences of $file_diff in prompt
                 const fileDiffCount = prompts.comment.split('$file_diff').length - 1;
-                const fileDiffTokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_4__/* .getTokenCount */ .N)(fileDiff);
+                const fileDiffTokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_5__/* .getTokenCount */ .N)(fileDiff);
                 if (fileDiffCount > 0 &&
                     tokens + fileDiffTokens * fileDiffCount <=
                         options.heavyTokenLimits.requestTokens) {
@@ -6672,7 +6672,7 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
             if (summary) {
                 // pack short summary into the inputs if it is not too long
                 const shortSummary = commenter.getShortSummary(summary.body);
-                const shortSummaryTokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_4__/* .getTokenCount */ .N)(shortSummary);
+                const shortSummaryTokens = (0,_tokenizer__WEBPACK_IMPORTED_MODULE_5__/* .getTokenCount */ .N)(shortSummary);
                 if (tokens + shortSummaryTokens <=
                     options.heavyTokenLimits.requestTokens) {
                     tokens += shortSummaryTokens;
@@ -6680,7 +6680,7 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
                 }
             }
             const [reply] = await heavyBot.chat(prompts.renderComment(inputs), {});
-            await commenter.reviewCommentReply(pullNumber, topLevelComment, (0,_review_protocol__WEBPACK_IMPORTED_MODULE_6__/* .sanitizeFindingMessage */ .A)(reply));
+            await commenter.reviewCommentReply(pullNumber, topLevelComment, (0,_review_protocol__WEBPACK_IMPORTED_MODULE_4__/* .sanitizeFindingMessage */ .AY)(reply));
         }
     }
     else {
@@ -6696,8 +6696,9 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 
 "use strict";
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
-/* harmony export */   A: () => (/* binding */ sanitizeFindingMessage),
-/* harmony export */   Z: () => (/* binding */ processStructuredReview)
+/* harmony export */   AY: () => (/* binding */ sanitizeFindingMessage),
+/* harmony export */   Kf: () => (/* binding */ selectTopFindings),
+/* harmony export */   ZW: () => (/* binding */ processStructuredReview)
 /* harmony export */ });
 function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -6713,7 +6714,7 @@ function parseJsonResponse(text) {
     if (text.length > 262144)
         throw new Error('Review protocol exceeds response size limit');
     let raw = text.trim();
-    const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw);
+    const fenced = /^\x60{3}(?:json)?\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw);
     if (fenced)
         raw = fenced[1];
     try {
@@ -6892,6 +6893,7 @@ function processStructuredReview(response, changed, diff, packedHunks) {
             comments.push({
                 startLine: line,
                 endLine: line,
+                severity: finding.severity,
                 message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${sanitizedMessage}`
             });
         }
@@ -6901,6 +6903,20 @@ function processStructuredReview(response, changed, diff, packedHunks) {
         cleanHunks: cleanHunks.sort((a, b) => a - b),
         comments
     };
+}
+const SEVERITY_RANK = {
+    high: 0,
+    medium: 1,
+    low: 2
+};
+function selectTopFindings(findings, cap) {
+    const sorted = [...findings].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+        (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) ||
+        a.startLine - b.startLine ||
+        a.endLine - b.endLine ||
+        (a.message < b.message ? -1 : a.message > b.message ? 1 : 0));
+    const selected = sorted.slice(0, Math.max(0, cap));
+    return { selected, omitted: Math.max(0, sorted.length - selected.length) };
 }
 
 
@@ -8419,8 +8435,8 @@ ${summariesFailed.length > 0
             let lgtmCount = 0;
             let reviewCount = 0;
             let modelFindingsCount = 0;
-            let publishableFindingsCount = 0;
             let findingCapExceeded = false;
+            const pendingFindings = [];
             const fileHunkLimit = new Map();
             const doReview = async (filename, fileDiff, patches) => {
                 const maxHunksForFile = fileHunkLimit.get(filename) ?? patches.length;
@@ -8539,18 +8555,32 @@ ${commentChain}
                         }
                         // Fail the entire file before publishing anything if the model
                         // omits a hunk, invents a location or cites non-existent source.
-                        const structured = (0,review_protocol/* processStructuredReview */.Z)(response, changedLineIndex, fileDiff, patchesPacked);
+                        // Allow one JSON/schema repair retry before failing the file.
+                        let structured;
+                        try {
+                            structured = (0,review_protocol/* processStructuredReview */.ZW)(response, changedLineIndex, fileDiff, patchesPacked);
+                        }
+                        catch {
+                            const repairPrompt = `Your previous response failed JSON schema validation. Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff. Previous output:\n${response.slice(0, 8000)}`;
+                            const [repaired] = await heavyBot.chat(repairPrompt, {});
+                            if (repaired === '') {
+                                throw new Error('Empty repair response');
+                            }
+                            structured = (0,review_protocol/* processStructuredReview */.ZW)(repaired, changedLineIndex, fileDiff, patchesPacked);
+                        }
                         for (const finding of structured.comments) {
                             modelFindingsCount += 1;
                             if (modelFindingsCount > MAX_MODEL_FINDINGS) {
                                 findingCapExceeded = true;
                                 continue;
                             }
-                            if (publishableFindingsCount < MAX_PUBLISHABLE_FINDINGS) {
-                                publishableFindingsCount += 1;
-                                await commenter.bufferReviewComment(filename, finding.startLine, finding.endLine, finding.message);
-                                reviewCount += 1;
-                            }
+                            pendingFindings.push({
+                                path: filename,
+                                startLine: finding.startLine,
+                                endLine: finding.endLine,
+                                severity: finding.severity,
+                                message: finding.message
+                            });
                         }
                         for (const cleanHunk of structured.cleanHunks) {
                             lgtmCount += 1;
@@ -8600,6 +8630,11 @@ ${commentChain}
                 }));
             }
             await Promise.all(reviewPromises);
+            const { selected: topFindings, omitted: omittedFindingsCount } = (0,review_protocol/* selectTopFindings */.Kf)(pendingFindings, MAX_PUBLISHABLE_FINDINGS);
+            for (const finding of topFindings) {
+                await commenter.bufferReviewComment(finding.path, finding.startLine, finding.endLine, finding.message);
+                reviewCount += 1;
+            }
             statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`;
             for (const [filename] of filesAndChangesReview) {
                 if (fileCoverage.get(filename) === 'failed_analysis')
@@ -8647,7 +8682,9 @@ ${budgetSkipped.size > 0
 <summary>Review comments generated (${reviewCount + lgtmCount})</summary>
 
 * Review: ${reviewCount}
-* LGTM: ${lgtmCount}
+* LGTM: ${lgtmCount}${omittedFindingsCount > 0
+                ? `\n* Omitted (cap ${MAX_PUBLISHABLE_FINDINGS}): ${omittedFindingsCount}`
+                : ''}
 
 </details>
 
