@@ -1,7 +1,7 @@
 import {info} from '@actions/core'
 import {OpenAIOptions, Options} from './options'
 import {requestLlmText} from './llm-adapters'
-import {LlmConnection, resolveLlmConnection} from './llm-provider'
+import {type LlmConnection, resolveLlmConnection} from './llm-provider'
 
 /**
  * Keep the review orchestrator's existing Bot.chat() tuple contract.

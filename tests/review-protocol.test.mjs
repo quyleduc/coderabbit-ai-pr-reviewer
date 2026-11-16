@@ -1,7 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
-import {processStructuredReview} from '../src/review-protocol.ts'
+import {
+  processStructuredReview,
+  sanitizeFindingMessage
+} from '../src/review-protocol.ts'
 import {planReviewPublication} from '../src/review-dedup.ts'
 import {publishReviewBatch} from '../src/review-publication.ts'
 
@@ -139,4 +142,38 @@ test('substantive messages containing LGTM remain findings', () => {
   const verified = processStructuredReview(response([clean, modified]), index, patch, 2)
   assert.equal(verified.comments.length, 1)
   assert.match(verified.comments[0].message, /LGTM/)
+})
+
+test('sanitizeFindingMessage preserves code inside backticks and fences while stripping prose hazards', () => {
+  const raw =
+    'Include `#include <stdint.h>` and `List<String>` or `@Override`, ping @alice, see [link](https://evil.example), <script>alert(1)</script>\n```c\n#include <stdio.h>\n// @param foo\n```'
+  const cleanMsg = sanitizeFindingMessage(raw)
+  assert.match(cleanMsg, /`#include <stdint\.h>`/)
+  assert.match(cleanMsg, /`List<String>`/)
+  assert.match(cleanMsg, /`@Override`/)
+  assert.match(cleanMsg, /#include <stdio\.h>/)
+  assert.match(cleanMsg, /@param foo/)
+  assert.doesNotMatch(cleanMsg, /@alice/)
+  assert.doesNotMatch(cleanMsg, /https:\/\/evil\.example/)
+  assert.doesNotMatch(cleanMsg, /<script>/)
+})
+
+test('sanitizeFindingMessage does not treat escaped backticks as code spans', () => {
+  const bypassed = sanitizeFindingMessage('\\`@alice [x](https://evil.example/a)\\`')
+  assert.doesNotMatch(bypassed, /@alice/)
+  assert.doesNotMatch(bypassed, /https:\/\/evil\.example/)
+})
+
+test('sanitizeFindingMessage requires matching backtick run lengths for code spans', () => {
+  const mismatchSingle = sanitizeFindingMessage('` @alice [x](https://evil.example/a) ``')
+  assert.doesNotMatch(mismatchSingle, /@alice/)
+  assert.doesNotMatch(mismatchSingle, /https:\/\/evil\.example/)
+
+  const mismatchFour = sanitizeFindingMessage('````@alice [x](https://evil.example/a)```')
+  assert.doesNotMatch(mismatchFour, /@alice/)
+  assert.doesNotMatch(mismatchFour, /https:\/\/evil\.example/)
+
+  const validNested = sanitizeFindingMessage('Use ``a ` b`` and @bob')
+  assert.match(validNested, /``a ` b``/)
+  assert.doesNotMatch(validNested, /@bob/)
 })
