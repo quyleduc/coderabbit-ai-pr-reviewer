@@ -93,13 +93,17 @@ export async function loadTrustedPublishedBodies(
     _perPage: number
   ) => Promise<readonly RemoteReviewComment[]>,
   trustedLogin: string,
-  trustedCommentTag: string,
+  trustedCommentTag: string | readonly string[],
   perPage = 100,
   maxPages = 1000
 ): Promise<string[]> {
+  const tags = Array.isArray(trustedCommentTag)
+    ? trustedCommentTag
+    : [trustedCommentTag]
   if (
     !trustedLogin ||
-    !trustedCommentTag ||
+    tags.length === 0 ||
+    tags.some(tag => typeof tag !== 'string' || tag.length === 0) ||
     !Number.isSafeInteger(perPage) ||
     perPage < 1 ||
     perPage > 100 ||
@@ -121,7 +125,7 @@ export async function loadTrustedPublishedBodies(
       if (
         comment.user?.login === trustedLogin &&
         typeof comment.body === 'string' &&
-        comment.body.includes(trustedCommentTag)
+        tags.some(tag => comment.body!.includes(tag))
       ) {
         bodies.push(comment.body)
       }

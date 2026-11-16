@@ -898,8 +898,12 @@ function planReviewPublication(candidates, existingCommentBodies) {
  * A spoofed marker by a non-publishing user is never trusted.
  */
 async function loadTrustedPublishedBodies(fetchPage, trustedLogin, trustedCommentTag, perPage = 100, maxPages = 1000) {
+    const tags = Array.isArray(trustedCommentTag)
+        ? trustedCommentTag
+        : [trustedCommentTag];
     if (!trustedLogin ||
-        !trustedCommentTag ||
+        tags.length === 0 ||
+        tags.some(tag => typeof tag !== 'string' || tag.length === 0) ||
         !Number.isSafeInteger(perPage) ||
         perPage < 1 ||
         perPage > 100 ||
@@ -919,7 +923,7 @@ async function loadTrustedPublishedBodies(fetchPage, trustedLogin, trustedCommen
         for (const comment of records) {
             if (comment.user?.login === trustedLogin &&
                 typeof comment.body === 'string' &&
-                comment.body.includes(trustedCommentTag)) {
+                tags.some(tag => comment.body.includes(tag))) {
                 bodies.push(comment.body);
             }
         }
@@ -1153,7 +1157,8 @@ ${COMMENT_TAG}`;
                 // eslint-disable-next-line camelcase
                 pull_number: pullNumber
             });
-            const pendingReview = reviews.data.find(review => review.state === 'PENDING');
+            const pendingReview = reviews.data.find(review => review.state === 'PENDING' &&
+                (!review.user?.login || review.user.login === this.botLogin));
             if (pendingReview) {
                 (0,core.info)(`Deleting pending review for PR #${pullNumber} id: ${pendingReview.id}`);
                 try {
@@ -1180,7 +1185,7 @@ ${COMMENT_TAG}`;
      * This avoids duplicate publication when GitHub requests fail.
      */
     async publishedBotCommentBodies(pullNumber) {
-        return loadTrustedPublishedBodies(async (page, perPage) => {
+        const bodies = await loadTrustedPublishedBodies(async (page, perPage) => {
             const response = await octokit/* octokit */.A.pulls.listReviewComments({
                 owner: repo.owner,
                 repo: repo.repo,
@@ -1191,7 +1196,8 @@ ${COMMENT_TAG}`;
                 page
             });
             return response.data;
-        }, this.botLogin, COMMENT_TAG);
+        }, this.botLogin, [COMMENT_TAG, COMMENT_REPLY_TAG]);
+        return bodies.map(body => body.replaceAll(COMMENT_REPLY_TAG, COMMENT_TAG));
     }
     async submitReview(pullNumber, commitId, statusMsg) {
         const body = `${COMMENT_GREETING}\n\n${statusMsg}\n`;
@@ -1212,6 +1218,8 @@ ${COMMENT_TAG}`;
             // All findings already exist; do not create a duplicate review.
             return true;
         }
+        // Clear any orphaned pending review left by a prior failed run before creating a new one.
+        await this.deletePendingReview(pullNumber);
         const result = await publishReviewBatch(pending, commitId, body, {
             createReview: async (request) => {
                 const response = await octokit/* octokit */.A.pulls.createReview({
@@ -1958,7 +1966,7 @@ __nccwpck_require__.r(__webpack_exports__);
 /* harmony import */ var _octokit__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(1150);
 /* harmony import */ var _options__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(8568);
 /* harmony import */ var _prompts__WEBPACK_IMPORTED_MODULE_7__ = __nccwpck_require__(8161);
-/* harmony import */ var _review__WEBPACK_IMPORTED_MODULE_8__ = __nccwpck_require__(5754);
+/* harmony import */ var _review__WEBPACK_IMPORTED_MODULE_8__ = __nccwpck_require__(6092);
 /* harmony import */ var _review_comment__WEBPACK_IMPORTED_MODULE_9__ = __nccwpck_require__(2046);
 
 
@@ -6521,12 +6529,14 @@ $comment
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
 /* harmony export */   C: () => (/* binding */ handleReviewComment)
 /* harmony export */ });
+/* unused harmony export isTrustedCommentAuthor */
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7484);
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(_actions_core__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _actions_github__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(722);
 /* harmony import */ var _commenter__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(2615);
 /* harmony import */ var _inputs__WEBPACK_IMPORTED_MODULE_5__ = __nccwpck_require__(6107);
 /* harmony import */ var _octokit__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(1150);
+/* harmony import */ var _review_protocol__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(3123);
 /* harmony import */ var _tokenizer__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(7134);
 
 // eslint-disable-next-line camelcase
@@ -6535,6 +6545,16 @@ $comment
 
 
 
+
+const TRUSTED_COMMENT_ASSOCIATIONS = new Set([
+    'OWNER',
+    'MEMBER',
+    'COLLABORATOR'
+]);
+function isTrustedCommentAuthor(association) {
+    return (typeof association === 'string' &&
+        TRUSTED_COMMENT_ASSOCIATIONS.has(association));
+}
 // eslint-disable-next-line camelcase
 const context = _actions_github__WEBPACK_IMPORTED_MODULE_1__/* .context */ ._;
 const repo = context.repo;
@@ -6569,8 +6589,13 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
         (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.warning)(`Skipped: ${context.eventName} event is not created`);
         return;
     }
+    if (!isTrustedCommentAuthor(comment.author_association)) {
+        (0,_actions_core__WEBPACK_IMPORTED_MODULE_0__.info)(`Skipped: ${context.eventName} commenter association (${comment.author_association ?? 'unknown'}) is not trusted`);
+        return;
+    }
     // Check if the comment is not from the bot itself
-    if (!comment.body.includes(_commenter__WEBPACK_IMPORTED_MODULE_2__/* .COMMENT_TAG */ .NI) &&
+    if (comment.user?.login !== commenter.botLogin &&
+        !comment.body.includes(_commenter__WEBPACK_IMPORTED_MODULE_2__/* .COMMENT_TAG */ .NI) &&
         !comment.body.includes(_commenter__WEBPACK_IMPORTED_MODULE_2__/* .COMMENT_REPLY_TAG */ .uH)) {
         const pullNumber = context.payload.pull_request.number;
         inputs.comment = `${comment.user.login}: ${comment.body}`;
@@ -6647,7 +6672,7 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
                 }
             }
             const [reply] = await heavyBot.chat(prompts.renderComment(inputs), {});
-            await commenter.reviewCommentReply(pullNumber, topLevelComment, reply);
+            await commenter.reviewCommentReply(pullNumber, topLevelComment, (0,_review_protocol__WEBPACK_IMPORTED_MODULE_6__/* .sanitizeFindingMessage */ .A)(reply));
         }
     }
     else {
@@ -6658,7 +6683,179 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 
 /***/ }),
 
-/***/ 5754:
+/***/ 3123:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   A: () => (/* binding */ sanitizeFindingMessage),
+/* harmony export */   Z: () => (/* binding */ processStructuredReview)
+/* harmony export */ });
+function isRecord(value) {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+function requireFields(value, fields, label) {
+    if (!isRecord(value) ||
+        Object.keys(value).length !== fields.length ||
+        !fields.every(field => Object.prototype.hasOwnProperty.call(value, field))) {
+        throw new Error(`Invalid ${label} schema fields`);
+    }
+}
+function parseJsonResponse(text) {
+    if (text.length > 262144)
+        throw new Error('Review protocol exceeds response size limit');
+    let raw = text.trim();
+    const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw);
+    if (fenced)
+        raw = fenced[1];
+    try {
+        return JSON.parse(raw);
+    }
+    catch {
+        throw new Error('Review protocol requires one valid JSON object');
+    }
+}
+function addedSourceLines(diff) {
+    const texts = new Map();
+    let cursor = 0;
+    let hunks = 0;
+    for (const source of diff.split(/\r?\n/)) {
+        const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(source);
+        if (header) {
+            cursor = Number(header[1]);
+            hunks++;
+        }
+        else if (hunks > 0 && source.startsWith('+')) {
+            if (texts.has(cursor))
+                throw new Error('Overlapping diff hunks');
+            texts.set(cursor, source.slice(1).trim());
+            cursor++;
+        }
+        else if (hunks > 0 && source.startsWith(' ')) {
+            cursor++;
+        }
+    }
+    return { texts, hunks };
+}
+function sanitizeProseSegment(text) {
+    return text
+        .replace(/!?\[([^\]]*)\]\(\s*(?:https?:|\/\/|data:|javascript:)[^)]*\)/gi, '$1')
+        .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
+        .replace(/@([a-zA-Z0-9_-]+)/g, '$1');
+}
+function sanitizeFindingMessage(raw) {
+    return raw
+        .trim()
+        .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
+        .map((segment, index) => index % 2 === 1 ? segment : sanitizeProseSegment(segment))
+        .join('');
+}
+/**
+ * Strict model-to-publisher contract:
+ * - exactly one verdict per packed hunk (no silent missing coverage)
+ * - every proposed finding is on an added line of its own hunk
+ * - evidence must match the corresponding source line in the supplied diff
+ * - no dependency on model verbosity, Markdown headings or extra properties
+ */
+function processStructuredReview(response, changed, diff, packedHunks) {
+    if (!changed.valid ||
+        !Number.isSafeInteger(packedHunks) ||
+        packedHunks < 1 ||
+        packedHunks > changed.hunks.length ||
+        !diff.trim()) {
+        throw new Error('Invalid diff or expected hunk count');
+    }
+    const root = parseJsonResponse(response);
+    requireFields(root, ['version', 'hunks'], 'review root');
+    if (root.version !== 1)
+        throw new Error('Unsupported review protocol version');
+    if (!Array.isArray(root.hunks))
+        throw new Error('Invalid hunks array');
+    if (root.hunks.length !== packedHunks) {
+        throw new Error('Missing or excess hunk verdicts');
+    }
+    const added = addedSourceLines(diff);
+    if (added.hunks !== changed.hunks.length) {
+        throw new Error('Diff hunk count mismatch');
+    }
+    const seen = new Set();
+    const cleanHunks = [];
+    const comments = [];
+    for (const rawHunk of root.hunks) {
+        requireFields(rawHunk, ['id', 'status', 'findings'], 'hunk');
+        if (typeof rawHunk.id !== 'string' ||
+            !/^h(?:0|[1-9]\d*)$/.test(rawHunk.id)) {
+            throw new Error('Invalid hunk id');
+        }
+        const hunkIndex = Number(rawHunk.id.slice(1));
+        if (!Number.isSafeInteger(hunkIndex) || hunkIndex >= packedHunks) {
+            throw new Error('Unexpected hunk id');
+        }
+        if (seen.has(hunkIndex))
+            throw new Error('Duplicate hunk id');
+        seen.add(hunkIndex);
+        if (rawHunk.status !== 'clean' && rawHunk.status !== 'issues') {
+            throw new Error('Invalid hunk status');
+        }
+        if (!Array.isArray(rawHunk.findings) || rawHunk.findings.length > 20) {
+            throw new Error('Invalid findings array');
+        }
+        if ((rawHunk.status === 'clean' && rawHunk.findings.length > 0) ||
+            (rawHunk.status === 'issues' && rawHunk.findings.length === 0)) {
+            throw new Error('Hunk status and findings disagree');
+        }
+        if (rawHunk.status === 'clean')
+            cleanHunks.push(hunkIndex);
+        for (const finding of rawHunk.findings) {
+            requireFields(finding, ['line', 'rule_id', 'severity', 'message', 'evidence'], 'finding');
+            if (!Number.isSafeInteger(finding.line) || finding.line < 1) {
+                throw new Error('Invalid finding line');
+            }
+            const line = finding.line;
+            if (!changed.hunks[hunkIndex].addedLines.includes(line)) {
+                throw new Error('Finding line is not an added line in its hunk');
+            }
+            if (typeof finding.evidence !== 'string' ||
+                !finding.evidence.trim() ||
+                finding.evidence.trim() !== added.texts.get(line)) {
+                throw new Error('Finding evidence does not match added source line');
+            }
+            if (typeof finding.rule_id !== 'string' ||
+                !/^[A-Z][A-Z0-9_]{2,63}$/.test(finding.rule_id)) {
+                throw new Error('Invalid rule_id');
+            }
+            if (finding.severity !== 'high' &&
+                finding.severity !== 'medium' &&
+                finding.severity !== 'low') {
+                throw new Error('Invalid severity');
+            }
+            if (typeof finding.message !== 'string' ||
+                finding.message.trim().length < 8 ||
+                finding.message.length > 1200) {
+                throw new Error('Invalid finding message');
+            }
+            const sanitizedMessage = sanitizeFindingMessage(finding.message);
+            if (sanitizedMessage.length < 8) {
+                throw new Error('Invalid finding message');
+            }
+            comments.push({
+                startLine: line,
+                endLine: line,
+                message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${sanitizedMessage}`
+            });
+        }
+    }
+    return {
+        reviewedHunks: [...seen].sort((a, b) => a - b),
+        cleanHunks: cleanHunks.sort((a, b) => a - b),
+        comments
+    };
+}
+
+
+/***/ }),
+
+/***/ 6092:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 "use strict";
@@ -6974,162 +7171,8 @@ const resolveReviewAnchor = (index, startLine, endLine) => {
 
 // EXTERNAL MODULE: ./lib/tokenizer.js
 var tokenizer = __nccwpck_require__(7134);
-;// CONCATENATED MODULE: ./lib/review-protocol.js
-function isRecord(value) {
-    return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
-function requireFields(value, fields, label) {
-    if (!isRecord(value) ||
-        Object.keys(value).length !== fields.length ||
-        !fields.every(field => Object.prototype.hasOwnProperty.call(value, field))) {
-        throw new Error(`Invalid ${label} schema fields`);
-    }
-}
-function parseJsonResponse(text) {
-    if (text.length > 262144)
-        throw new Error('Review protocol exceeds response size limit');
-    let raw = text.trim();
-    const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw);
-    if (fenced)
-        raw = fenced[1];
-    try {
-        return JSON.parse(raw);
-    }
-    catch {
-        throw new Error('Review protocol requires one valid JSON object');
-    }
-}
-function addedSourceLines(diff) {
-    const texts = new Map();
-    let cursor = 0;
-    let hunks = 0;
-    for (const source of diff.split(/\r?\n/)) {
-        const header = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(source);
-        if (header) {
-            cursor = Number(header[1]);
-            hunks++;
-        }
-        else if (hunks > 0 && source.startsWith('+')) {
-            if (texts.has(cursor))
-                throw new Error('Overlapping diff hunks');
-            texts.set(cursor, source.slice(1).trim());
-            cursor++;
-        }
-        else if (hunks > 0 && source.startsWith(' ')) {
-            cursor++;
-        }
-    }
-    return { texts, hunks };
-}
-function sanitizeFindingMessage(raw) {
-    return raw
-        .trim()
-        .replace(/!?\[([^\]]*)\]\(\s*(?:https?:|\/\/|data:|javascript:)[^)]*\)/gi, '$1')
-        .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
-        .replace(/@([a-zA-Z0-9_-]+)/g, '$1');
-}
-/**
- * Strict model-to-publisher contract:
- * - exactly one verdict per packed hunk (no silent missing coverage)
- * - every proposed finding is on an added line of its own hunk
- * - evidence must match the corresponding source line in the supplied diff
- * - no dependency on model verbosity, Markdown headings or extra properties
- */
-function processStructuredReview(response, changed, diff, packedHunks) {
-    if (!changed.valid ||
-        !Number.isSafeInteger(packedHunks) ||
-        packedHunks < 1 ||
-        packedHunks > changed.hunks.length ||
-        !diff.trim()) {
-        throw new Error('Invalid diff or expected hunk count');
-    }
-    const root = parseJsonResponse(response);
-    requireFields(root, ['version', 'hunks'], 'review root');
-    if (root.version !== 1)
-        throw new Error('Unsupported review protocol version');
-    if (!Array.isArray(root.hunks))
-        throw new Error('Invalid hunks array');
-    if (root.hunks.length !== packedHunks) {
-        throw new Error('Missing or excess hunk verdicts');
-    }
-    const added = addedSourceLines(diff);
-    if (added.hunks !== changed.hunks.length) {
-        throw new Error('Diff hunk count mismatch');
-    }
-    const seen = new Set();
-    const cleanHunks = [];
-    const comments = [];
-    for (const rawHunk of root.hunks) {
-        requireFields(rawHunk, ['id', 'status', 'findings'], 'hunk');
-        if (typeof rawHunk.id !== 'string' ||
-            !/^h(?:0|[1-9]\d*)$/.test(rawHunk.id)) {
-            throw new Error('Invalid hunk id');
-        }
-        const hunkIndex = Number(rawHunk.id.slice(1));
-        if (!Number.isSafeInteger(hunkIndex) || hunkIndex >= packedHunks) {
-            throw new Error('Unexpected hunk id');
-        }
-        if (seen.has(hunkIndex))
-            throw new Error('Duplicate hunk id');
-        seen.add(hunkIndex);
-        if (rawHunk.status !== 'clean' && rawHunk.status !== 'issues') {
-            throw new Error('Invalid hunk status');
-        }
-        if (!Array.isArray(rawHunk.findings) || rawHunk.findings.length > 20) {
-            throw new Error('Invalid findings array');
-        }
-        if ((rawHunk.status === 'clean' && rawHunk.findings.length > 0) ||
-            (rawHunk.status === 'issues' && rawHunk.findings.length === 0)) {
-            throw new Error('Hunk status and findings disagree');
-        }
-        if (rawHunk.status === 'clean')
-            cleanHunks.push(hunkIndex);
-        for (const finding of rawHunk.findings) {
-            requireFields(finding, ['line', 'rule_id', 'severity', 'message', 'evidence'], 'finding');
-            if (!Number.isSafeInteger(finding.line) || finding.line < 1) {
-                throw new Error('Invalid finding line');
-            }
-            const line = finding.line;
-            if (!changed.hunks[hunkIndex].addedLines.includes(line)) {
-                throw new Error('Finding line is not an added line in its hunk');
-            }
-            if (typeof finding.evidence !== 'string' ||
-                !finding.evidence.trim() ||
-                finding.evidence.trim() !== added.texts.get(line)) {
-                throw new Error('Finding evidence does not match added source line');
-            }
-            if (typeof finding.rule_id !== 'string' ||
-                !/^[A-Z][A-Z0-9_]{2,63}$/.test(finding.rule_id)) {
-                throw new Error('Invalid rule_id');
-            }
-            if (finding.severity !== 'high' &&
-                finding.severity !== 'medium' &&
-                finding.severity !== 'low') {
-                throw new Error('Invalid severity');
-            }
-            if (typeof finding.message !== 'string' ||
-                finding.message.trim().length < 8 ||
-                finding.message.length > 1200) {
-                throw new Error('Invalid finding message');
-            }
-            const sanitizedMessage = sanitizeFindingMessage(finding.message);
-            if (sanitizedMessage.length < 8) {
-                throw new Error('Invalid finding message');
-            }
-            comments.push({
-                startLine: line,
-                endLine: line,
-                message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${sanitizedMessage}`
-            });
-        }
-    }
-    return {
-        reviewedHunks: [...seen].sort((a, b) => a - b),
-        cleanHunks: cleanHunks.sort((a, b) => a - b),
-        comments
-    };
-}
-
+// EXTERNAL MODULE: ./lib/review-protocol.js
+var review_protocol = __nccwpck_require__(3123);
 ;// CONCATENATED MODULE: ./lib/pr-files.js
 async function loadCompletePullRequestFiles(expectedFileCount, fetchPage, { pageSize = 100, maxPages = 30 } = {}) {
     if (!Number.isSafeInteger(expectedFileCount) ||
@@ -7433,7 +7476,7 @@ const shaPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
 const timeoutMarker = Symbol('review-context-timeout');
 // Bound provider work and response validation before selection applies tighter output caps.
 const MAX_PROVIDER_CANDIDATES = 256;
-function review_context_isRecord(value) {
+function isRecord(value) {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 function compareText(left, right) {
@@ -7480,7 +7523,7 @@ function countExcerptLines(excerpt) {
     return lines.length;
 }
 function validateCandidate(value, expectedHeadSha, expectedVariantId, maxExcerptBytes) {
-    if (!review_context_isRecord(value))
+    if (!isRecord(value))
         return { valid: false, reason: 'malformed_candidate' };
     const headSha = value.headSha;
     const variantId = value.variantId;
@@ -7594,7 +7637,7 @@ ${JSON.stringify(facts, null, 2)}
 \`\`\``;
 }
 function validRequest(request) {
-    if (!review_context_isRecord(request) ||
+    if (!isRecord(request) ||
         !isSafeText(request.repositoryId, 1024) ||
         !Number.isSafeInteger(request.pullRequestNumber) ||
         request.pullRequestNumber < 1 ||
@@ -7607,7 +7650,7 @@ function validRequest(request) {
         request.hunks.length === 0) {
         return false;
     }
-    return request.hunks.every(hunk => review_context_isRecord(hunk) &&
+    return request.hunks.every(hunk => isRecord(hunk) &&
         Number.isSafeInteger(hunk.startLine) &&
         hunk.startLine > 0 &&
         Number.isSafeInteger(hunk.endLine) &&
@@ -8445,7 +8488,7 @@ ${commentChain}
                         }
                         // Fail the entire file before publishing anything if the model
                         // omits a hunk, invents a location or cites non-existent source.
-                        const structured = processStructuredReview(response, changedLineIndex, fileDiff, patchesPacked);
+                        const structured = (0,review_protocol/* processStructuredReview */.Z)(response, changedLineIndex, fileDiff, patchesPacked);
                         for (const finding of structured.comments) {
                             modelFindingsCount += 1;
                             if (modelFindingsCount > MAX_MODEL_FINDINGS) {

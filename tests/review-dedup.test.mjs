@@ -154,3 +154,22 @@ test('checkpoint selection rejects invalid identity and missing content', () => 
   ], tag, 'github-actions[bot]')?.id, 3)
   assert.throws(() => findTrustedTaggedComment([], tag, ''), TypeError)
 })
+
+test('dedup retains findings whose top-level comment was updated to COMMENT_REPLY_TAG', async () => {
+  const commentTag = '<!-- comment-tag -->'
+  const replyTag = '<!-- reply-tag -->'
+  const taggedFinding = {
+    ...finding,
+    message: `${finding.message}\n\n${commentTag}`
+  }
+  const published = planReviewPublication([taggedFinding], []).pending[0].message
+  const repliedBody = published.replace(commentTag, replyTag)
+  const bodies = await loadTrustedPublishedBodies(
+    async () => [{user: {login: 'github-actions[bot]'}, body: repliedBody}],
+    'github-actions[bot]',
+    [commentTag, replyTag]
+  )
+  assert.equal(bodies.length, 1)
+  const normalized = bodies.map(body => body.replaceAll(replyTag, commentTag))
+  assert.equal(planReviewPublication([taggedFinding], normalized).pending.length, 0)
+})

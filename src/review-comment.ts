@@ -12,7 +12,21 @@ import {Inputs} from './inputs'
 import {octokit} from './octokit'
 import {type Options} from './options'
 import {type Prompts} from './prompts'
+import {sanitizeFindingMessage} from './review-protocol'
 import {getTokenCount} from './tokenizer'
+
+const TRUSTED_COMMENT_ASSOCIATIONS = new Set([
+  'OWNER',
+  'MEMBER',
+  'COLLABORATOR'
+])
+
+export function isTrustedCommentAuthor(association?: string | null): boolean {
+  return (
+    typeof association === 'string' &&
+    TRUSTED_COMMENT_ASSOCIATIONS.has(association)
+  )
+}
 
 // eslint-disable-next-line camelcase
 const context = github_context
@@ -64,8 +78,18 @@ export const handleReviewComment = async (
     return
   }
 
+  if (!isTrustedCommentAuthor(comment.author_association)) {
+    info(
+      `Skipped: ${context.eventName} commenter association (${
+        comment.author_association ?? 'unknown'
+      }) is not trusted`
+    )
+    return
+  }
+
   // Check if the comment is not from the bot itself
   if (
+    comment.user?.login !== commenter.botLogin &&
     !comment.body.includes(COMMENT_TAG) &&
     !comment.body.includes(COMMENT_REPLY_TAG)
   ) {
@@ -171,7 +195,11 @@ export const handleReviewComment = async (
 
       const [reply] = await heavyBot.chat(prompts.renderComment(inputs), {})
 
-      await commenter.reviewCommentReply(pullNumber, topLevelComment, reply)
+      await commenter.reviewCommentReply(
+        pullNumber,
+        topLevelComment,
+        sanitizeFindingMessage(reply)
+      )
     }
   } else {
     info(`Skipped: ${context.eventName} event is from the bot itself`)

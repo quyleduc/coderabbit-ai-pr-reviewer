@@ -66,15 +66,24 @@ function addedSourceLines(diff: string): {
   return {texts, hunks}
 }
 
-function sanitizeFindingMessage(raw: string): string {
-  return raw
-    .trim()
+function sanitizeProseSegment(text: string): string {
+  return text
     .replace(
       /!?\[([^\]]*)\]\(\s*(?:https?:|\/\/|data:|javascript:)[^)]*\)/gi,
       '$1'
     )
     .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
     .replace(/@([a-zA-Z0-9_-]+)/g, '$1')
+}
+
+export function sanitizeFindingMessage(raw: string): string {
+  return raw
+    .trim()
+    .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
+    .map((segment, index) =>
+      index % 2 === 1 ? segment : sanitizeProseSegment(segment)
+    )
+    .join('')
 }
 
 /**

@@ -52,7 +52,7 @@ export const COMMIT_ID_START_TAG = '<!-- commit_ids_reviewed_start -->'
 export const COMMIT_ID_END_TAG = '<!-- commit_ids_reviewed_end -->'
 
 export class Commenter {
-  private readonly botLogin: string
+  readonly botLogin: string
 
   constructor(botLogin = 'github-actions[bot]') {
     this.botLogin = botLogin
@@ -218,7 +218,9 @@ ${COMMENT_TAG}`
       })
 
       const pendingReview = reviews.data.find(
-        review => review.state === 'PENDING'
+        review =>
+          review.state === 'PENDING' &&
+          (!review.user?.login || review.user.login === this.botLogin)
       )
 
       if (pendingReview) {
@@ -250,7 +252,7 @@ ${COMMENT_TAG}`
   private async publishedBotCommentBodies(
     pullNumber: number
   ): Promise<string[]> {
-    return loadTrustedPublishedBodies(
+    const bodies = await loadTrustedPublishedBodies(
       async (page, perPage) => {
         const response = await octokit.pulls.listReviewComments({
           owner: repo.owner,
@@ -264,8 +266,9 @@ ${COMMENT_TAG}`
         return response.data
       },
       this.botLogin,
-      COMMENT_TAG
+      [COMMENT_TAG, COMMENT_REPLY_TAG]
     )
+    return bodies.map(body => body.replaceAll(COMMENT_REPLY_TAG, COMMENT_TAG))
   }
 
   async submitReview(
@@ -302,6 +305,9 @@ ${COMMENT_TAG}`
       // All findings already exist; do not create a duplicate review.
       return true
     }
+
+    // Clear any orphaned pending review left by a prior failed run before creating a new one.
+    await this.deletePendingReview(pullNumber)
 
     const result = await publishReviewBatch(pending, commitId, body, {
       createReview: async request => {

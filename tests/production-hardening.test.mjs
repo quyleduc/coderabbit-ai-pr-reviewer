@@ -602,3 +602,55 @@ test('classifyShadowFailure maps OpenAI response errors, size limit, and hunk st
     assert.equal(classifyShadowFailure(new Error(message)), expected)
   }
 })
+
+test('submitReview deletes orphaned pending review before createReview', async () => {
+  const {octokit} = await import('../src/octokit.ts')
+  const {Commenter} = await import('../src/commenter.ts')
+  const origListReviews = octokit.pulls.listReviews
+  const origListReviewComments = octokit.pulls.listReviewComments
+  const origCreateReview = octokit.pulls.createReview
+  const origSubmitReview = octokit.pulls.submitReview
+  const origDeletePendingReview = octokit.pulls.deletePendingReview
+  const callOrder = []
+
+  try {
+    octokit.pulls.listReviewComments = async () => ({data: []})
+    octokit.pulls.listReviews = async () => ({
+      data: [{id: 777, state: 'PENDING', user: {login: 'github-actions[bot]'}}]
+    })
+    octokit.pulls.deletePendingReview = async params => {
+      callOrder.push(`delete:${params.review_id}`)
+      return {data: {}}
+    }
+    octokit.pulls.createReview = async () => {
+      callOrder.push('create')
+      return {data: {id: 888}}
+    }
+    octokit.pulls.submitReview = async () => {
+      callOrder.push('submit')
+      return {data: {}}
+    }
+
+    const commenter = new Commenter()
+    await commenter.bufferReviewComment('src/a.c', 1, 1, 'Check null')
+    const ok = await commenter.submitReview(42, 'deadbeef', 'Review done')
+    assert.equal(ok, true)
+    assert.deepEqual(callOrder, ['delete:777', 'create', 'submit'])
+  } finally {
+    octokit.pulls.listReviews = origListReviews
+    octokit.pulls.listReviewComments = origListReviewComments
+    octokit.pulls.createReview = origCreateReview
+    octokit.pulls.submitReview = origSubmitReview
+    octokit.pulls.deletePendingReview = origDeletePendingReview
+  }
+})
+
+test('isTrustedCommentAuthor only allows OWNER, MEMBER, and COLLABORATOR', async () => {
+  const {isTrustedCommentAuthor} = await import('../src/review-comment.ts')
+  assert.equal(isTrustedCommentAuthor('OWNER'), true)
+  assert.equal(isTrustedCommentAuthor('MEMBER'), true)
+  assert.equal(isTrustedCommentAuthor('COLLABORATOR'), true)
+  assert.equal(isTrustedCommentAuthor('CONTRIBUTOR'), false)
+  assert.equal(isTrustedCommentAuthor('NONE'), false)
+  assert.equal(isTrustedCommentAuthor(undefined), false)
+})
