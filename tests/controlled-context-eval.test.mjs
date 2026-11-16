@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import {createHash} from 'node:crypto'
 import {runContextComparison} from '../scripts/controlled-context-eval.mjs'
+import {
+  createAstContextProvider,
+  loadCParser
+} from '../src/context-provider.ts'
 
 const finding = {line: 1, rule_id: 'NULL_DEREF'}
 const response = {
@@ -96,4 +101,71 @@ test('fixture context uses bounded production retrieval and is included in conte
     observed.find(x => x.arm === 'hunk-plus-context').prompt,
     /## Cross-file reference context/
   )
+})
+
+test('AST context provider integrates cleanly with offline comparison', async () => {
+  const wasm = new URL('../vendor/tree-sitter-c.wasm', import.meta.url).pathname
+  const parser = await loadCParser(wasm)
+  const files = {
+    'src/entry.c':
+      '#include "helper.h"\nvoid entry(int *p) {\n  reset_ptr(p);\n}\n',
+    'src/helper.h': 'void reset_ptr(int *p);\n',
+    'src/helper.c': 'void reset_ptr(int *p) {\n  if (p) *p = 0;\n}\n'
+  }
+  const provider = createAstContextProvider({
+    parser,
+    fetchFile: async path => {
+      const text = files[path]
+      return text === undefined
+        ? null
+        : {blobSha: createHash('sha1').update(text).digest('hex'), text}
+    }
+  })
+  const candidates = await provider.collectCandidates(
+    {
+      repositoryId: 'o/r',
+      pullRequestNumber: 1,
+      baseSha: 'b'.repeat(40),
+      headSha: 'a'.repeat(40),
+      changedFile: 'src/entry.c',
+      hunks: [{startLine: 3, endLine: 3, patch: '@@ -3 +3 @@'}]
+    },
+    new AbortController().signal,
+    256
+  )
+  const result = await runContextComparison(
+    [
+      fixture({
+        patch: '@@ -2,0 +3 @@\n+  reset_ptr(p);\n',
+        expected: [{line: 3, rule_id: 'NULL_DEREF'}],
+        mock_response: {
+          ...response,
+          hunks: [
+            {
+              id: 'h0',
+              status: 'issues',
+              findings: [
+                {
+                  line: 3,
+                  rule_id: 'NULL_DEREF',
+                  severity: 'high',
+                  message: 'Possible null dereference.',
+                  evidence: 'reset_ptr(p);'
+                }
+              ]
+            }
+          ]
+        },
+        contextCandidates: candidates.map(c => ({
+          ...c,
+          variantId: 'offline-fixture-v1'
+        }))
+      })
+    ],
+    async ({fixture: input}) => JSON.stringify(input.mock_response)
+  )
+  assert.equal(result.arms['hunk-plus-context'].availableContextCases, 1)
+  assert.equal(result.arms['hunk-plus-context'].contextSnippets, 2)
+  assert.ok(result.contextMinusHunkOnly.promptTokens > 0)
+  assert.equal(result.arms['hunk-plus-context'].f1, 1)
 })
