@@ -255,6 +255,12 @@ inputs:
     required: false
     description: ISO code for the response language
     default: en-US
+  context_provider:
+    required: false
+    description:
+      "Cross-file context for C sources: 'none' (hunk-only) or 'ast'
+      (tree-sitter definitions of called functions, read via GitHub API)"
+    default: 'none'
   bot_icon:
     required: false
     description: 'The icon for the bot'

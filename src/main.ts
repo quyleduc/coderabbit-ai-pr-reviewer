@@ -1,3 +1,4 @@
+import {join} from 'node:path'
 import {
   getBooleanInput,
   getInput,
@@ -5,11 +6,41 @@ import {
   setFailed,
   warning
 } from '@actions/core'
+import {context as githubContext} from '@actions/github'
 import {Bot} from './bot'
+import {
+  createAstContextProvider,
+  createGithubFileFetcher,
+  loadCParser,
+  type ContentApi
+} from './context-provider'
+import {octokit} from './octokit'
 import {OpenAIOptions, Options} from './options'
 import {Prompts} from './prompts'
 import {codeReview} from './review'
+import type {ReviewContextProvider} from './review-context'
 import {handleReviewComment} from './review-comment'
+
+/** Opt-in; any failure degrades to hunk-only review instead of failing it. */
+async function buildContextProvider(): Promise<
+  ReviewContextProvider | undefined
+> {
+  if (getInput('context_provider') !== 'ast') return undefined
+  try {
+    const {owner, repo} = githubContext.repo
+    return createAstContextProvider({
+      parser: await loadCParser(join(__dirname, 'tree-sitter-c.wasm')),
+      fetchFile: createGithubFileFetcher(
+        octokit as unknown as ContentApi,
+        owner,
+        repo
+      )
+    })
+  } catch {
+    warning('AST context unavailable; continuing with hunk-only review')
+    return undefined
+  }
+}
 
 async function run(): Promise<void> {
   const options: Options = new Options(
@@ -76,7 +107,13 @@ async function run(): Promise<void> {
       process.env.GITHUB_EVENT_NAME === 'pull_request' ||
       process.env.GITHUB_EVENT_NAME === 'pull_request_target'
     ) {
-      await codeReview(lightBot, heavyBot, options, prompts)
+      await codeReview(
+        lightBot,
+        heavyBot,
+        options,
+        prompts,
+        await buildContextProvider()
+      )
     } else if (
       process.env.GITHUB_EVENT_NAME === 'pull_request_review_comment'
     ) {

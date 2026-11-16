@@ -150,9 +150,15 @@ test('missing providers and provider errors produce explicit hunk-only prompt st
   )
 })
 
-test('the ordinary Action entry point continues to run without a production ECA provider', () => {
-  assert.match(mainSource, /codeReview\(lightBot, heavyBot, options, prompts\)/)
-  assert.doesNotMatch(mainSource, /ECA|contextProvider|ReviewContextProvider/)
+test('the AST context provider is opt-in and fails open', () => {
+  assert.match(
+    mainSource,
+    /getInput\('context_provider'\) !== 'ast'\) return undefined/
+  )
+  assert.match(mainSource, /await buildContextProvider\(\)/)
+  assert.doesNotMatch(mainSource, /ECA/)
+  const action = readFileSync(new URL('../action.yml', import.meta.url), 'utf8')
+  assert.match(action, /context_provider:[\s\S]*?default: 'none'/)
 })
 
 test('context-only source lines still cannot pass the original changed-line validator', () => {

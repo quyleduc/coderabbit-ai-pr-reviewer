@@ -5,7 +5,7 @@
   "description": "Source-validated GitHub pull request reviewer with configurable LLM provider",
   "main": "lib/main.js",
   "scripts": {
-    "build": "cp node_modules/@dqbd/tiktoken/tiktoken_bg.wasm dist/tiktoken_bg.wasm && tsc",
+    "build": "cp node_modules/@dqbd/tiktoken/tiktoken_bg.wasm node_modules/web-tree-sitter/web-tree-sitter.wasm vendor/tree-sitter-c.wasm dist/ && tsc",
     "package": "ncc build --license licenses.txt",
     "act": "npm run build && npm run package && ./bin/act pull_request_target --secret-file .secrets",
     "format": "prettier --write '**/*.ts'",
@@ -34,7 +34,8 @@
     "@octokit/plugin-retry": "^8.1.1",
     "@octokit/plugin-throttling": "^11.0.5",
     "minimatch": "^11.0.1",
-    "p-limit": "^4.0.0"
+    "p-limit": "^4.0.0",
+    "web-tree-sitter": "0.27.2"
   },
   "devDependencies": {
     "@types/node": "^22.15.0",

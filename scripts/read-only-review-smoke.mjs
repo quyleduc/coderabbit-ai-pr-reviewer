@@ -43,7 +43,10 @@ export async function smokeReadOnlyPullRequest({
   const generatedArtifacts = new Set([
     'package-lock.json',
     'dist/index.js',
-    'dist/licenses.txt'
+    'dist/licenses.txt',
+    'dist/tree-sitter-c.wasm',
+    'dist/web-tree-sitter.wasm',
+    'vendor/tree-sitter-c.wasm'
   ])
   const ignoredGeneratedFiles = files
     .filter(file => generatedArtifacts.has(file.filename))
