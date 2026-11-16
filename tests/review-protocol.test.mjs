@@ -163,3 +163,17 @@ test('sanitizeFindingMessage does not treat escaped backticks as code spans', ()
   assert.doesNotMatch(bypassed, /@alice/)
   assert.doesNotMatch(bypassed, /https:\/\/evil\.example/)
 })
+
+test('sanitizeFindingMessage requires matching backtick run lengths for code spans', () => {
+  const mismatchSingle = sanitizeFindingMessage('` @alice [x](https://evil.example/a) ``')
+  assert.doesNotMatch(mismatchSingle, /@alice/)
+  assert.doesNotMatch(mismatchSingle, /https:\/\/evil\.example/)
+
+  const mismatchFour = sanitizeFindingMessage('````@alice [x](https://evil.example/a)```')
+  assert.doesNotMatch(mismatchFour, /@alice/)
+  assert.doesNotMatch(mismatchFour, /https:\/\/evil\.example/)
+
+  const validNested = sanitizeFindingMessage('Use ``a ` b`` and @bob')
+  assert.match(validNested, /``a ` b``/)
+  assert.doesNotMatch(validNested, /@bob/)
+})

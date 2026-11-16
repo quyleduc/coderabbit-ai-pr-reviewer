@@ -82,6 +82,27 @@ function isEscaped(text: string, index: number): boolean {
   return backslashes % 2 === 1
 }
 
+function findClosingBackticks(
+  text: string,
+  start: number,
+  openLen: number,
+  allowNewline: boolean
+): number {
+  let j = start
+  while (j < text.length) {
+    if (!allowNewline && text[j] === '\n') return -1
+    if (text[j] !== '`') {
+      j++
+      continue
+    }
+    let runLen = 0
+    while (j + runLen < text.length && text[j + runLen] === '`') runLen++
+    if (runLen === openLen) return j + runLen
+    j += runLen
+  }
+  return -1
+}
+
 export function sanitizeFindingMessage(raw: string): string {
   const text = raw.trim()
   let out = ''
@@ -92,14 +113,14 @@ export function sanitizeFindingMessage(raw: string): string {
       i++
       continue
     }
-    const isFence = text.startsWith('```', i)
-    const delimiter = isFence ? '```' : '`'
-    const close = text.indexOf(delimiter, i + delimiter.length)
-    if (close === -1 || (!isFence && text.slice(i + 1, close).includes('\n'))) {
-      i += delimiter.length
+    let openLen = 0
+    while (i + openLen < text.length && text[i + openLen] === '`') openLen++
+    const isFence = openLen >= 3 && (i === 0 || text[i - 1] === '\n')
+    const end = findClosingBackticks(text, i + openLen, openLen, isFence)
+    if (end === -1) {
+      i += openLen
       continue
     }
-    const end = close + delimiter.length
     out += sanitizeProseSegment(text.slice(proseStart, i))
     out += text.slice(i, end)
     proseStart = end
