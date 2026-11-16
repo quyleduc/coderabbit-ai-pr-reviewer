@@ -76,14 +76,36 @@ function sanitizeProseSegment(text: string): string {
     .replace(/@([a-zA-Z0-9_-]+)/g, '$1')
 }
 
+function isEscaped(text: string, index: number): boolean {
+  let backslashes = 0
+  for (let i = index - 1; i >= 0 && text[i] === '\\'; i--) backslashes++
+  return backslashes % 2 === 1
+}
+
 export function sanitizeFindingMessage(raw: string): string {
-  return raw
-    .trim()
-    .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
-    .map((segment, index) =>
-      index % 2 === 1 ? segment : sanitizeProseSegment(segment)
-    )
-    .join('')
+  const text = raw.trim()
+  let out = ''
+  let proseStart = 0
+  let i = 0
+  while (i < text.length) {
+    if (text[i] !== '`' || isEscaped(text, i)) {
+      i++
+      continue
+    }
+    const isFence = text.startsWith('```', i)
+    const delimiter = isFence ? '```' : '`'
+    const close = text.indexOf(delimiter, i + delimiter.length)
+    if (close === -1 || (!isFence && text.slice(i + 1, close).includes('\n'))) {
+      i += delimiter.length
+      continue
+    }
+    const end = close + delimiter.length
+    out += sanitizeProseSegment(text.slice(proseStart, i))
+    out += text.slice(i, end)
+    proseStart = end
+    i = end
+  }
+  return out + sanitizeProseSegment(text.slice(proseStart))
 }
 
 /**

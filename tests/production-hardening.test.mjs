@@ -645,6 +645,75 @@ test('submitReview deletes orphaned pending review before createReview', async (
   }
 })
 
+test('submitReview paginates listReviews to delete pending review on later page and dedups replied comments', async () => {
+  const {octokit} = await import('../src/octokit.ts')
+  const {Commenter, COMMENT_GREETING, COMMENT_REPLY_TAG, COMMENT_TAG} =
+    await import('../src/commenter.ts')
+  const {planReviewPublication} = await import('../src/review-dedup.ts')
+  const origListReviews = octokit.pulls.listReviews
+  const origListReviewComments = octokit.pulls.listReviewComments
+  const origCreateReview = octokit.pulls.createReview
+  const origDeletePendingReview = octokit.pulls.deletePendingReview
+  const deleted = []
+  let createCalls = 0
+
+  try {
+    const rawMsg = 'Check null pointer'
+    const published = planReviewPublication(
+      [
+        {
+          path: 'src/a.c',
+          startLine: 1,
+          endLine: 1,
+          message: `${COMMENT_GREETING}\n\n${rawMsg}\n\n${COMMENT_TAG}`
+        }
+      ],
+      []
+    ).pending[0].message
+    const replied = published.replace(COMMENT_TAG, COMMENT_REPLY_TAG)
+
+    octokit.pulls.listReviewComments = async () => ({
+      data: [{id: 1, user: {login: 'github-actions[bot]'}, body: replied}]
+    })
+    octokit.pulls.listReviews = async params => {
+      if (params.page === 1) {
+        return {
+          data: Array.from({length: 100}, (_, idx) => ({
+            id: idx + 1,
+            state: 'COMMENTED',
+            user: {login: 'github-actions[bot]'}
+          }))
+        }
+      }
+      return {
+        data: [{id: 999, state: 'PENDING', user: {login: 'github-actions[bot]'}}]
+      }
+    }
+    octokit.pulls.deletePendingReview = async params => {
+      deleted.push(params.review_id)
+      return {data: {}}
+    }
+    octokit.pulls.createReview = async () => {
+      createCalls++
+      return {data: {id: 1000}}
+    }
+
+    const commenter = new Commenter()
+    await commenter.deletePendingReview(42)
+    assert.deepEqual(deleted, [999])
+
+    await commenter.bufferReviewComment('src/a.c', 1, 1, rawMsg)
+    const ok = await commenter.submitReview(42, 'deadbeef', 'Review done')
+    assert.equal(ok, true)
+    assert.equal(createCalls, 0)
+  } finally {
+    octokit.pulls.listReviews = origListReviews
+    octokit.pulls.listReviewComments = origListReviewComments
+    octokit.pulls.createReview = origCreateReview
+    octokit.pulls.deletePendingReview = origDeletePendingReview
+  }
+})
+
 test('isTrustedCommentAuthor only allows OWNER, MEMBER, and COLLABORATOR', async () => {
   const {isTrustedCommentAuthor} = await import('../src/review-comment.ts')
   assert.equal(isTrustedCommentAuthor('OWNER'), true)

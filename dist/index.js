@@ -1151,14 +1151,22 @@ ${COMMENT_TAG}`;
     }
     async deletePendingReview(pullNumber) {
         try {
-            const reviews = await octokit/* octokit */.A.pulls.listReviews({
-                owner: repo.owner,
-                repo: repo.repo,
-                // eslint-disable-next-line camelcase
-                pull_number: pullNumber
-            });
-            const pendingReview = reviews.data.find(review => review.state === 'PENDING' &&
-                (!review.user?.login || review.user.login === this.botLogin));
+            let pendingReview;
+            for (let page = 1; page <= 20; page++) {
+                const reviews = await octokit/* octokit */.A.pulls.listReviews({
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    // eslint-disable-next-line camelcase
+                    pull_number: pullNumber,
+                    // eslint-disable-next-line camelcase
+                    per_page: 100,
+                    page
+                });
+                pendingReview = reviews.data.find(review => review.state === 'PENDING' &&
+                    (!review.user?.login || review.user.login === this.botLogin));
+                if (pendingReview || reviews.data.length < 100)
+                    break;
+            }
             if (pendingReview) {
                 (0,core.info)(`Deleting pending review for PR #${pullNumber} id: ${pendingReview.id}`);
                 try {
@@ -6743,12 +6751,36 @@ function sanitizeProseSegment(text) {
         .replace(/<\/?[a-zA-Z][^>]*>|<!--[\s\S]*?-->/g, '')
         .replace(/@([a-zA-Z0-9_-]+)/g, '$1');
 }
+function isEscaped(text, index) {
+    let backslashes = 0;
+    for (let i = index - 1; i >= 0 && text[i] === '\\'; i--)
+        backslashes++;
+    return backslashes % 2 === 1;
+}
 function sanitizeFindingMessage(raw) {
-    return raw
-        .trim()
-        .split(/(```[\s\S]*?```|`[^`\n]+`)/g)
-        .map((segment, index) => index % 2 === 1 ? segment : sanitizeProseSegment(segment))
-        .join('');
+    const text = raw.trim();
+    let out = '';
+    let proseStart = 0;
+    let i = 0;
+    while (i < text.length) {
+        if (text[i] !== '`' || isEscaped(text, i)) {
+            i++;
+            continue;
+        }
+        const isFence = text.startsWith('```', i);
+        const delimiter = isFence ? '```' : '`';
+        const close = text.indexOf(delimiter, i + delimiter.length);
+        if (close === -1 || (!isFence && text.slice(i + 1, close).includes('\n'))) {
+            i += delimiter.length;
+            continue;
+        }
+        const end = close + delimiter.length;
+        out += sanitizeProseSegment(text.slice(proseStart, i));
+        out += text.slice(i, end);
+        proseStart = end;
+        i = end;
+    }
+    return out + sanitizeProseSegment(text.slice(proseStart));
 }
 /**
  * Strict model-to-publisher contract:

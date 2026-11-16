@@ -210,18 +210,26 @@ ${COMMENT_TAG}`
 
   async deletePendingReview(pullNumber: number) {
     try {
-      const reviews = await octokit.pulls.listReviews({
-        owner: repo.owner,
-        repo: repo.repo,
-        // eslint-disable-next-line camelcase
-        pull_number: pullNumber
-      })
-
-      const pendingReview = reviews.data.find(
-        review =>
-          review.state === 'PENDING' &&
-          (!review.user?.login || review.user.login === this.botLogin)
-      )
+      let pendingReview:
+        | {id: number; state?: string; user?: {login?: string | null} | null}
+        | undefined
+      for (let page = 1; page <= 20; page++) {
+        const reviews = await octokit.pulls.listReviews({
+          owner: repo.owner,
+          repo: repo.repo,
+          // eslint-disable-next-line camelcase
+          pull_number: pullNumber,
+          // eslint-disable-next-line camelcase
+          per_page: 100,
+          page
+        })
+        pendingReview = reviews.data.find(
+          review =>
+            review.state === 'PENDING' &&
+            (!review.user?.login || review.user.login === this.botLogin)
+        )
+        if (pendingReview || reviews.data.length < 100) break
+      }
 
       if (pendingReview) {
         info(

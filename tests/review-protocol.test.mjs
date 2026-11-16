@@ -157,3 +157,9 @@ test('sanitizeFindingMessage preserves code inside backticks and fences while st
   assert.doesNotMatch(cleanMsg, /https:\/\/evil\.example/)
   assert.doesNotMatch(cleanMsg, /<script>/)
 })
+
+test('sanitizeFindingMessage does not treat escaped backticks as code spans', () => {
+  const bypassed = sanitizeFindingMessage('\\`@alice [x](https://evil.example/a)\\`')
+  assert.doesNotMatch(bypassed, /@alice/)
+  assert.doesNotMatch(bypassed, /https:\/\/evil\.example/)
+})
