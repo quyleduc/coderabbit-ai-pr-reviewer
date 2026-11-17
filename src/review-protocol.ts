@@ -1,5 +1,4 @@
 import type {ChangedLineIndex} from './diff-hunks'
-import {getTokenCount} from './tokenizer-core.mjs'
 
 export type FindingSeverity = 'high' | 'medium' | 'low'
 
@@ -289,7 +288,11 @@ export function buildStructuredRepairPrompt(
   reviewPrompt: string,
   previousResponse: string,
   errorMessage: string,
-  maxTokens?: number
+  maxTokens?: number,
+  countTokens: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number = text => Math.ceil(text.length / 4)
 ): string {
   const header = `Your previous JSON review response failed validation (${errorMessage}).
 Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`
@@ -300,12 +303,12 @@ ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`
-  if (maxTokens !== undefined && getTokenCount(full) > maxTokens) {
+  if (maxTokens !== undefined && countTokens(full) > maxTokens) {
     const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`
-    if (getTokenCount(fallback) > maxTokens) {
+    if (countTokens(fallback) > maxTokens) {
       throw new Error('Repair prompt exceeds token budget')
     }
     return fallback
@@ -324,23 +327,27 @@ export async function runStructuredReviewWithRepair(
     prompt: string
   ) => Promise<string>,
   onRepairAttempt?: () => void,
-  maxRepairTokens?: number
+  maxRepairTokens?: number,
+  countTokens?: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number
 ): Promise<StructuredReviewResult | null> {
   const response = await chat(reviewPrompt)
   if (response === '') return null
   try {
     return validate(response)
   } catch (err) {
-    onRepairAttempt?.()
     const reason = err instanceof Error ? err.message : 'invalid schema'
-    const repaired = await chat(
-      buildStructuredRepairPrompt(
-        reviewPrompt,
-        response,
-        reason,
-        maxRepairTokens
-      )
+    const repairPrompt = buildStructuredRepairPrompt(
+      reviewPrompt,
+      response,
+      reason,
+      maxRepairTokens,
+      countTokens
     )
+    onRepairAttempt?.()
+    const repaired = await chat(repairPrompt)
     if (repaired === '') {
       throw new Error('Empty repair response')
     }
