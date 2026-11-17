@@ -6958,10 +6958,14 @@ ${previousResponse.slice(0, 4000)}
 Original review request (with diff):
 ${reviewPrompt}`;
     if (maxTokens !== undefined && (0,_tokenizer_core_mjs__WEBPACK_IMPORTED_MODULE_0__/* .getTokenCount */ .N)(full) > maxTokens) {
-        return `${header}
+        const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`;
+        if ((0,_tokenizer_core_mjs__WEBPACK_IMPORTED_MODULE_0__/* .getTokenCount */ .N)(fallback) > maxTokens) {
+            throw new Error('Repair prompt exceeds token budget');
+        }
+        return fallback;
     }
     return full;
 }

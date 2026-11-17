@@ -246,6 +246,23 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
   assert.doesNotMatch(overBudgetPrompt, /Previous invalid response:/)
   assert.match(overBudgetPrompt, /REVIEW_PROMPT_WITH_DIFF/)
 
+  // Even fallback prompt exceeds budget -> aborts repair without calling chat a second time
+  let repairChatCalls = 0
+  await assert.rejects(
+    runStructuredReviewWithRepair(
+      'REVIEW_PROMPT_WITH_DIFF '.repeat(15),
+      validate,
+      async () => {
+        repairChatCalls++
+        return 'not json'
+      },
+      undefined,
+      40
+    ),
+    /Repair prompt exceeds token budget/
+  )
+  assert.equal(repairChatCalls, 1)
+
   // Both invalid -> rejects
   await assert.rejects(
     runStructuredReviewWithRepair('DIFF_PROMPT', validate, async () => 'still bad'),

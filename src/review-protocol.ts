@@ -301,10 +301,14 @@ ${previousResponse.slice(0, 4000)}
 Original review request (with diff):
 ${reviewPrompt}`
   if (maxTokens !== undefined && getTokenCount(full) > maxTokens) {
-    return `${header}
+    const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`
+    if (getTokenCount(fallback) > maxTokens) {
+      throw new Error('Repair prompt exceeds token budget')
+    }
+    return fallback
   }
   return full
 }
