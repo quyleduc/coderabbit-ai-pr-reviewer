@@ -1,4 +1,5 @@
 import type {ChangedLineIndex} from './diff-hunks'
+import {getTokenCount} from './tokenizer-core.mjs'
 
 export type FindingSeverity = 'high' | 'medium' | 'low'
 
@@ -287,42 +288,58 @@ export function selectTopFindings<
 export function buildStructuredRepairPrompt(
   reviewPrompt: string,
   previousResponse: string,
-  errorMessage: string
+  errorMessage: string,
+  maxTokens?: number
 ): string {
-  return `Your previous JSON review response failed validation (${errorMessage}).
-Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.
+  const header = `Your previous JSON review response failed validation (${errorMessage}).
+Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`
+  const full = `${header}
 
 Previous invalid response:
 ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`
+  if (maxTokens !== undefined && getTokenCount(full) > maxTokens) {
+    return `${header}
+
+Original review request (with diff):
+${reviewPrompt}`
+  }
+  return full
 }
 
 export async function runStructuredReviewWithRepair(
   reviewPrompt: string,
-  changed: ChangedLineIndex,
-  diff: string,
-  packedHunks: number,
+  validate: (
+    // eslint-disable-next-line no-unused-vars
+    response: string
+  ) => StructuredReviewResult,
   chat: (
     // eslint-disable-next-line no-unused-vars
     prompt: string
   ) => Promise<string>,
-  onRepairAttempt?: () => void
+  onRepairAttempt?: () => void,
+  maxRepairTokens?: number
 ): Promise<StructuredReviewResult | null> {
   const response = await chat(reviewPrompt)
   if (response === '') return null
   try {
-    return processStructuredReview(response, changed, diff, packedHunks)
+    return validate(response)
   } catch (err) {
     onRepairAttempt?.()
     const reason = err instanceof Error ? err.message : 'invalid schema'
     const repaired = await chat(
-      buildStructuredRepairPrompt(reviewPrompt, response, reason)
+      buildStructuredRepairPrompt(
+        reviewPrompt,
+        response,
+        reason,
+        maxRepairTokens
+      )
     )
     if (repaired === '') {
       throw new Error('Empty repair response')
     }
-    return processStructuredReview(repaired, changed, diff, packedHunks)
+    return validate(repaired)
   }
 }

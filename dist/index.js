@@ -6723,10 +6723,12 @@ function findTrustedTaggedComment(comments, tag, trustedLogin) {
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
 /* harmony export */   AY: () => (/* binding */ sanitizeFindingMessage),
 /* harmony export */   Kf: () => (/* binding */ selectTopFindings),
-/* harmony export */   Pw: () => (/* binding */ buildStructuredRepairPrompt),
-/* harmony export */   ZW: () => (/* binding */ processStructuredReview)
+/* harmony export */   ZW: () => (/* binding */ processStructuredReview),
+/* harmony export */   io: () => (/* binding */ runStructuredReviewWithRepair)
 /* harmony export */ });
-/* unused harmony export runStructuredReviewWithRepair */
+/* unused harmony export buildStructuredRepairPrompt */
+/* harmony import */ var _tokenizer_core_mjs__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(2647);
+
 function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -6945,31 +6947,39 @@ function selectTopFindings(findings, cap) {
     const selected = sorted.slice(0, Math.max(0, cap));
     return { selected, omitted: Math.max(0, sorted.length - selected.length) };
 }
-function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage) {
-    return `Your previous JSON review response failed validation (${errorMessage}).
-Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.
+function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage, maxTokens) {
+    const header = `Your previous JSON review response failed validation (${errorMessage}).
+Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`;
+    const full = `${header}
 
 Previous invalid response:
 ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`;
+    if (maxTokens !== undefined && (0,_tokenizer_core_mjs__WEBPACK_IMPORTED_MODULE_0__/* .getTokenCount */ .N)(full) > maxTokens) {
+        return `${header}
+
+Original review request (with diff):
+${reviewPrompt}`;
+    }
+    return full;
 }
-async function runStructuredReviewWithRepair(reviewPrompt, changed, diff, packedHunks, chat, onRepairAttempt) {
+async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRepairAttempt, maxRepairTokens) {
     const response = await chat(reviewPrompt);
     if (response === '')
         return null;
     try {
-        return processStructuredReview(response, changed, diff, packedHunks);
+        return validate(response);
     }
     catch (err) {
         onRepairAttempt?.();
         const reason = err instanceof Error ? err.message : 'invalid schema';
-        const repaired = await chat(buildStructuredRepairPrompt(reviewPrompt, response, reason));
+        const repaired = await chat(buildStructuredRepairPrompt(reviewPrompt, response, reason, maxRepairTokens));
         if (repaired === '') {
             throw new Error('Empty repair response');
         }
-        return processStructuredReview(repaired, changed, diff, packedHunks);
+        return validate(repaired);
     }
 }
 
@@ -8604,27 +8614,17 @@ ${commentChain}
                     // perform review
                     try {
                         const reviewPrompt = prompts.renderReviewFileDiff(ins);
-                        const [response] = await heavyBot.chat(reviewPrompt, {});
-                        if (response === '') {
+                        const structured = await (0,review_protocol/* runStructuredReviewWithRepair */.io)(reviewPrompt, response => (0,review_protocol/* processStructuredReview */.ZW)(response, changedLineIndex, fileDiff, patchesPacked), async (prompt) => {
+                            const [reply] = await heavyBot.chat(prompt, {});
+                            return reply;
+                        }, () => {
+                            (0,core.warning)('Structured review validation failed; attempting 1 repair retry');
+                        }, options.heavyTokenLimits.requestTokens);
+                        if (structured === null) {
                             (0,core.info)('review: nothing obtained from openai');
                             reviewsFailed.push(`${filename} (no response)`);
                             hunkCoverage.markFile(filename, 'failed_analysis');
                             return;
-                        }
-                        // Fail the entire file before publishing anything if the model
-                        // omits a hunk, invents a location or cites non-existent source.
-                        let structured;
-                        try {
-                            structured = (0,review_protocol/* processStructuredReview */.ZW)(response, changedLineIndex, fileDiff, patchesPacked);
-                        }
-                        catch (err) {
-                            (0,core.warning)('Structured review validation failed; attempting 1 repair retry');
-                            const reason = err instanceof Error ? err.message : 'invalid schema';
-                            const [repaired] = await heavyBot.chat((0,review_protocol/* buildStructuredRepairPrompt */.Pw)(reviewPrompt, response, reason), {});
-                            if (repaired === '') {
-                                throw new Error('Empty repair response');
-                            }
-                            structured = (0,review_protocol/* processStructuredReview */.ZW)(repaired, changedLineIndex, fileDiff, patchesPacked);
                         }
                         for (const finding of structured.comments) {
                             modelFindingsCount += 1;

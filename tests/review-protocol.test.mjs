@@ -210,14 +210,13 @@ test('selectTopFindings prioritizes high > medium > low deterministically and co
 test('runStructuredReviewWithRepair retries once with original diff prompt and handles failure paths', async () => {
   const seenPrompts = []
   const validJson = JSON.stringify({version: 1, hunks: [clean, issue]})
+  const validate = raw => processStructuredReview(raw, index, patch, 2)
 
   // 1st invalid, 2nd valid -> succeeds and repair prompt includes original diff prompt + error reason
   let turn = 0
   const repaired = await runStructuredReviewWithRepair(
     'REVIEW_PROMPT_WITH_DIFF',
-    index,
-    patch,
-    2,
+    validate,
     async prompt => {
       seenPrompts.push(prompt)
       turn++
@@ -229,16 +228,34 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
   assert.match(seenPrompts[1], /REVIEW_PROMPT_WITH_DIFF/)
   assert.match(seenPrompts[1], /one valid JSON object/)
 
+  // Over token budget -> drops oversized previousResponse while keeping error reason + original diff prompt
+  let overBudgetPrompt = ''
+  await runStructuredReviewWithRepair(
+    'REVIEW_PROMPT_WITH_DIFF',
+    validate,
+    async prompt => {
+      if (overBudgetPrompt === '' && prompt !== 'REVIEW_PROMPT_WITH_DIFF') {
+        overBudgetPrompt = prompt
+        return validJson
+      }
+      return 'BAD_TOKEN '.repeat(200)
+    },
+    undefined,
+    120
+  )
+  assert.doesNotMatch(overBudgetPrompt, /Previous invalid response:/)
+  assert.match(overBudgetPrompt, /REVIEW_PROMPT_WITH_DIFF/)
+
   // Both invalid -> rejects
   await assert.rejects(
-    runStructuredReviewWithRepair('DIFF_PROMPT', index, patch, 2, async () => 'still bad'),
+    runStructuredReviewWithRepair('DIFF_PROMPT', validate, async () => 'still bad'),
     /one valid JSON/
   )
 
   // 1st invalid, 2nd empty -> rejects
   let emptyTurn = 0
   await assert.rejects(
-    runStructuredReviewWithRepair('DIFF_PROMPT', index, patch, 2, async () => {
+    runStructuredReviewWithRepair('DIFF_PROMPT', validate, async () => {
       emptyTurn++
       return emptyTurn === 1 ? 'bad' : ''
     }),
