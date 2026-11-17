@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
 import {
   processStructuredReview,
+  runStructuredReviewWithRepair,
   sanitizeFindingMessage,
   selectTopFindings
 } from '../src/review-protocol.ts'
@@ -203,5 +204,44 @@ test('selectTopFindings prioritizes high > medium > low deterministically and co
   assert.deepEqual(
     selected.map(item => item.message),
     ['h1', 'h2', 'm1']
+  )
+})
+
+test('runStructuredReviewWithRepair retries once with original diff prompt and handles failure paths', async () => {
+  const seenPrompts = []
+  const validJson = JSON.stringify({version: 1, hunks: [clean, issue]})
+
+  // 1st invalid, 2nd valid -> succeeds and repair prompt includes original diff prompt + error reason
+  let turn = 0
+  const repaired = await runStructuredReviewWithRepair(
+    'REVIEW_PROMPT_WITH_DIFF',
+    index,
+    patch,
+    2,
+    async prompt => {
+      seenPrompts.push(prompt)
+      turn++
+      return turn === 1 ? 'not json at all' : validJson
+    }
+  )
+  assert.equal(repaired?.comments.length, 1)
+  assert.equal(seenPrompts.length, 2)
+  assert.match(seenPrompts[1], /REVIEW_PROMPT_WITH_DIFF/)
+  assert.match(seenPrompts[1], /one valid JSON object/)
+
+  // Both invalid -> rejects
+  await assert.rejects(
+    runStructuredReviewWithRepair('DIFF_PROMPT', index, patch, 2, async () => 'still bad'),
+    /one valid JSON/
+  )
+
+  // 1st invalid, 2nd empty -> rejects
+  let emptyTurn = 0
+  await assert.rejects(
+    runStructuredReviewWithRepair('DIFF_PROMPT', index, patch, 2, async () => {
+      emptyTurn++
+      return emptyTurn === 1 ? 'bad' : ''
+    }),
+    /Empty repair response/
   )
 })

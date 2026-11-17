@@ -283,3 +283,46 @@ export function selectTopFindings<
   const selected = sorted.slice(0, Math.max(0, cap))
   return {selected, omitted: Math.max(0, sorted.length - selected.length)}
 }
+
+export function buildStructuredRepairPrompt(
+  reviewPrompt: string,
+  previousResponse: string,
+  errorMessage: string
+): string {
+  return `Your previous JSON review response failed validation (${errorMessage}).
+Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.
+
+Previous invalid response:
+${previousResponse.slice(0, 4000)}
+
+Original review request (with diff):
+${reviewPrompt}`
+}
+
+export async function runStructuredReviewWithRepair(
+  reviewPrompt: string,
+  changed: ChangedLineIndex,
+  diff: string,
+  packedHunks: number,
+  chat: (
+    // eslint-disable-next-line no-unused-vars
+    prompt: string
+  ) => Promise<string>,
+  onRepairAttempt?: () => void
+): Promise<StructuredReviewResult | null> {
+  const response = await chat(reviewPrompt)
+  if (response === '') return null
+  try {
+    return processStructuredReview(response, changed, diff, packedHunks)
+  } catch (err) {
+    onRepairAttempt?.()
+    const reason = err instanceof Error ? err.message : 'invalid schema'
+    const repaired = await chat(
+      buildStructuredRepairPrompt(reviewPrompt, response, reason)
+    )
+    if (repaired === '') {
+      throw new Error('Empty repair response')
+    }
+    return processStructuredReview(repaired, changed, diff, packedHunks)
+  }
+}

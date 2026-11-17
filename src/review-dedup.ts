@@ -48,31 +48,47 @@ export function publicationFingerprint(candidate: PublishCandidate): string {
     .digest('hex')
 }
 
+export function filterUnpublishedFindings<T extends PublishCandidate>(
+  candidates: readonly T[],
+  existingCommentBodies: readonly string[],
+  formatMessage: (
+    // eslint-disable-next-line no-unused-vars
+    message: string
+  ) => string = message => message
+): T[] {
+  const canonical = (value: string) => value.replace(/\r\n/g, '\n').trimEnd()
+  const existing = new Set(existingCommentBodies.map(canonical))
+  const withinRun = new Set<string>()
+  const fresh: T[] = []
+  for (const candidate of candidates) {
+    const formatted = {
+      path: candidate.path,
+      startLine: candidate.startLine,
+      endLine: candidate.endLine,
+      message: formatMessage(candidate.message)
+    }
+    const fp = publicationFingerprint(formatted)
+    const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
+    if (withinRun.has(fp) || existing.has(canonical(message))) continue
+    withinRun.add(fp)
+    fresh.push(candidate)
+  }
+  return fresh
+}
+
 /** Pure replay planner: no GitHub API calls and no destructive comment cleanup. */
 export function planReviewPublication(
   candidates: readonly PublishCandidate[],
   existingCommentBodies: readonly string[]
 ): {pending: PublishCandidate[]; suppressed: number} {
-  // A marker-looking string may appear inside model output or be quoted by
-  // another comment. It is not proof that the particular body was published.
-  // Only an exact previously-published body with the expected path/range hash
-  // may suppress an identical candidate on rerun.
-  const canonical = (value: string) => value.replace(/\r\n/g, '\n').trimEnd()
-  const existing = new Set(existingCommentBodies.map(canonical))
-  const withinRun = new Set<string>()
-  const pending: PublishCandidate[] = []
-  let suppressed = 0
-  for (const candidate of candidates) {
-    const fp = publicationFingerprint(candidate)
-    const message = `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
-    if (withinRun.has(fp) || existing.has(canonical(message))) {
-      suppressed++
-      continue
-    }
-    withinRun.add(fp)
-    pending.push({...candidate, message})
-  }
-  return {pending, suppressed}
+  const fresh = filterUnpublishedFindings(candidates, existingCommentBodies)
+  const pending = fresh.map(candidate => ({
+    ...candidate,
+    message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(
+      candidate
+    )} -->`
+  }))
+  return {pending, suppressed: candidates.length - pending.length}
 }
 
 export interface RemoteReviewComment {

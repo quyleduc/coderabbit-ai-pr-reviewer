@@ -51,6 +51,14 @@ export const SHORT_SUMMARY_END_TAG = `-->
 export const COMMIT_ID_START_TAG = '<!-- commit_ids_reviewed_start -->'
 export const COMMIT_ID_END_TAG = '<!-- commit_ids_reviewed_end -->'
 
+export function formatReviewCommentBody(message: string): string {
+  return `${COMMENT_GREETING}
+
+${message}
+
+${COMMENT_TAG}`
+}
+
 export class Commenter {
   readonly botLogin: string
 
@@ -195,16 +203,11 @@ ${tag}`
     endLine: number,
     message: string
   ) {
-    message = `${COMMENT_GREETING}
-
-${message}
-
-${COMMENT_TAG}`
     this.reviewCommentsBuffer.push({
       path,
       startLine,
       endLine,
-      message
+      message: formatReviewCommentBody(message)
     })
   }
 
@@ -257,9 +260,7 @@ ${COMMENT_TAG}`
    * Strict remote read: API errors must not look like an empty comment history.
    * This avoids duplicate publication when GitHub requests fail.
    */
-  private async publishedBotCommentBodies(
-    pullNumber: number
-  ): Promise<string[]> {
+  async publishedBotCommentBodies(pullNumber: number): Promise<string[]> {
     const bodies = await loadTrustedPublishedBodies(
       async (page, perPage) => {
         const response = await octokit.pulls.listReviewComments({

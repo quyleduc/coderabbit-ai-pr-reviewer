@@ -811,7 +811,7 @@ class Bot {
 
 /***/ }),
 
-/***/ 2615:
+/***/ 4735:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
 "use strict";
@@ -825,7 +825,8 @@ __nccwpck_require__.d(__webpack_exports__, {
   S7: () => (/* binding */ RAW_SUMMARY_START_TAG),
   Nz: () => (/* binding */ SHORT_SUMMARY_END_TAG),
   Es: () => (/* binding */ SHORT_SUMMARY_START_TAG),
-  Zs: () => (/* binding */ SUMMARIZE_TAG)
+  Zs: () => (/* binding */ SUMMARIZE_TAG),
+  lt: () => (/* binding */ formatReviewCommentBody)
 });
 
 // UNUSED EXPORTS: COMMENT_GREETING, COMMIT_ID_END_TAG, COMMIT_ID_START_TAG, DESCRIPTION_END_TAG, DESCRIPTION_START_TAG, IN_PROGRESS_END_TAG, IN_PROGRESS_START_TAG
@@ -836,119 +837,8 @@ var core = __nccwpck_require__(7484);
 var github = __nccwpck_require__(722);
 // EXTERNAL MODULE: ./lib/octokit.js + 4 modules
 var octokit = __nccwpck_require__(1150);
-// EXTERNAL MODULE: external "node:crypto"
-var external_node_crypto_ = __nccwpck_require__(7598);
-;// CONCATENATED MODULE: ./lib/review-dedup.js
-
-const MARKER_PREFIX = 'coderabbit:published-finding-v1:';
-const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g;
-function publishedFingerprints(body) {
-    return [...body.matchAll(MARKER_REGEX)].map(m => m[1]);
-}
-function publicationFingerprint(candidate) {
-    const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim();
-    const message = candidate.message
-        .replace(MARKER_REGEX, '')
-        .replace(/\r\n/g, '\n')
-        .trim();
-    if (!path ||
-        !message ||
-        !Number.isSafeInteger(candidate.startLine) ||
-        !Number.isSafeInteger(candidate.endLine) ||
-        candidate.startLine < 1 ||
-        candidate.endLine < candidate.startLine) {
-        throw new TypeError('Invalid PR publication candidate');
-    }
-    return (0,external_node_crypto_.createHash)('sha256')
-        .update(JSON.stringify([
-        'publish-v1',
-        path,
-        candidate.startLine,
-        candidate.endLine,
-        message
-    ]))
-        .digest('hex');
-}
-/** Pure replay planner: no GitHub API calls and no destructive comment cleanup. */
-function planReviewPublication(candidates, existingCommentBodies) {
-    // A marker-looking string may appear inside model output or be quoted by
-    // another comment. It is not proof that the particular body was published.
-    // Only an exact previously-published body with the expected path/range hash
-    // may suppress an identical candidate on rerun.
-    const canonical = (value) => value.replace(/\r\n/g, '\n').trimEnd();
-    const existing = new Set(existingCommentBodies.map(canonical));
-    const withinRun = new Set();
-    const pending = [];
-    let suppressed = 0;
-    for (const candidate of candidates) {
-        const fp = publicationFingerprint(candidate);
-        const message = `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`;
-        if (withinRun.has(fp) || existing.has(canonical(message))) {
-            suppressed++;
-            continue;
-        }
-        withinRun.add(fp);
-        pending.push({ ...candidate, message });
-    }
-    return { pending, suppressed };
-}
-/**
- * Fetch every page without silently swallowing GitHub failures.
- * The fetcher is injected for deterministic pagination/retry tests.
- * A spoofed marker by a non-publishing user is never trusted.
- */
-async function loadTrustedPublishedBodies(fetchPage, trustedLogin, trustedCommentTag, perPage = 100, maxPages = 1000) {
-    const tags = Array.isArray(trustedCommentTag)
-        ? trustedCommentTag
-        : [trustedCommentTag];
-    if (!trustedLogin ||
-        tags.length === 0 ||
-        tags.some(tag => typeof tag !== 'string' || tag.length === 0) ||
-        !Number.isSafeInteger(perPage) ||
-        perPage < 1 ||
-        perPage > 100 ||
-        !Number.isSafeInteger(maxPages) ||
-        maxPages < 1) {
-        throw new TypeError('Invalid trusted comment query');
-    }
-    const bodies = [];
-    for (let page = 1; page <= maxPages; page++) {
-        const records = await fetchPage(page, perPage);
-        if (!Array.isArray(records)) {
-            throw new Error('Unexpected GitHub review comments response');
-        }
-        if (records.length > perPage) {
-            throw new Error('GitHub review comments page exceeds requested size');
-        }
-        for (const comment of records) {
-            if (comment.user?.login === trustedLogin &&
-                typeof comment.body === 'string' &&
-                tags.some(tag => comment.body.includes(tag))) {
-                bodies.push(comment.body);
-            }
-        }
-        if (records.length < perPage)
-            return bodies;
-    }
-    throw new Error('Review-comment pagination exceeds safety limit');
-}
-/**
- * Never use untrusted PR comments as state/checkpoint sources.
- * GitHub (not user-supplied Markdown) attests to user.login.
- */
-function findTrustedTaggedComment(comments, tag, trustedLogin) {
-    if (!tag || !trustedLogin)
-        throw new TypeError('Missing trusted comment identity');
-    for (const comment of comments) {
-        if (comment.user?.login === trustedLogin &&
-            typeof comment.body === 'string' &&
-            comment.body.includes(tag)) {
-            return comment;
-        }
-    }
-    return null;
-}
-
+// EXTERNAL MODULE: ./lib/review-dedup.js
+var review_dedup = __nccwpck_require__(3055);
 ;// CONCATENATED MODULE: ./lib/review-publication.js
 /**
  * On unknown GitHub API outcomes, return an explicit failure. Never retry
@@ -1037,6 +927,13 @@ const SHORT_SUMMARY_END_TAG = `-->
 <!-- end of auto-generated comment: short summary by OSS CodeRabbit -->`;
 const COMMIT_ID_START_TAG = '<!-- commit_ids_reviewed_start -->';
 const COMMIT_ID_END_TAG = '<!-- commit_ids_reviewed_end -->';
+function formatReviewCommentBody(message) {
+    return `${COMMENT_GREETING}
+
+${message}
+
+${COMMENT_TAG}`;
+}
 class Commenter {
     botLogin;
     constructor(botLogin = 'github-actions[bot]') {
@@ -1137,16 +1034,11 @@ ${tag}`;
     }
     reviewCommentsBuffer = [];
     async bufferReviewComment(path, startLine, endLine, message) {
-        message = `${COMMENT_GREETING}
-
-${message}
-
-${COMMENT_TAG}`;
         this.reviewCommentsBuffer.push({
             path,
             startLine,
             endLine,
-            message
+            message: formatReviewCommentBody(message)
         });
     }
     async deletePendingReview(pullNumber) {
@@ -1193,7 +1085,7 @@ ${COMMENT_TAG}`;
      * This avoids duplicate publication when GitHub requests fail.
      */
     async publishedBotCommentBodies(pullNumber) {
-        const bodies = await loadTrustedPublishedBodies(async (page, perPage) => {
+        const bodies = await (0,review_dedup/* loadTrustedPublishedBodies */.U2)(async (page, perPage) => {
             const response = await octokit/* octokit */.A.pulls.listReviewComments({
                 owner: repo.owner,
                 repo: repo.repo,
@@ -1212,7 +1104,7 @@ ${COMMENT_TAG}`;
         let pending;
         try {
             const existingBodies = await this.publishedBotCommentBodies(pullNumber);
-            const plan = planReviewPublication(this.reviewCommentsBuffer, existingBodies);
+            const plan = (0,review_dedup/* planReviewPublication */.eE)(this.reviewCommentsBuffer, existingBodies);
             pending = plan.pending;
             if (plan.suppressed > 0) {
                 (0,core.info)(`Suppressed ${plan.suppressed} duplicate review findings`);
@@ -1491,7 +1383,7 @@ ${chain}
             // HTML markers are not authentication: a PR author can forge them.
             // Only metadata-authenticated comments from our publishing identity
             // are allowed to supply review state or be replaced by the bot.
-            return findTrustedTaggedComment(comments, tag, this.botLogin);
+            return (0,review_dedup/* findTrustedTaggedComment */.yP)(comments, tag, this.botLogin);
         }
         catch (e) {
             (0,core.warning)(`Failed to find comment with tag: ${e}`);
@@ -6541,7 +6433,7 @@ $comment
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7484);
 /* harmony import */ var _actions_core__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(_actions_core__WEBPACK_IMPORTED_MODULE_0__);
 /* harmony import */ var _actions_github__WEBPACK_IMPORTED_MODULE_1__ = __nccwpck_require__(722);
-/* harmony import */ var _commenter__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(2615);
+/* harmony import */ var _commenter__WEBPACK_IMPORTED_MODULE_2__ = __nccwpck_require__(4735);
 /* harmony import */ var _inputs__WEBPACK_IMPORTED_MODULE_6__ = __nccwpck_require__(6107);
 /* harmony import */ var _octokit__WEBPACK_IMPORTED_MODULE_3__ = __nccwpck_require__(1150);
 /* harmony import */ var _review_protocol__WEBPACK_IMPORTED_MODULE_4__ = __nccwpck_require__(3123);
@@ -6691,6 +6583,139 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 
 /***/ }),
 
+/***/ 3055:
+/***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
+
+"use strict";
+/* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
+/* harmony export */   U2: () => (/* binding */ loadTrustedPublishedBodies),
+/* harmony export */   eE: () => (/* binding */ planReviewPublication),
+/* harmony export */   kL: () => (/* binding */ filterUnpublishedFindings),
+/* harmony export */   yP: () => (/* binding */ findTrustedTaggedComment)
+/* harmony export */ });
+/* unused harmony exports publishedFingerprints, publicationFingerprint */
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7598);
+/* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_crypto__WEBPACK_IMPORTED_MODULE_0__);
+
+const MARKER_PREFIX = 'coderabbit:published-finding-v1:';
+const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g;
+function publishedFingerprints(body) {
+    return [...body.matchAll(MARKER_REGEX)].map(m => m[1]);
+}
+function publicationFingerprint(candidate) {
+    const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+    const message = candidate.message
+        .replace(MARKER_REGEX, '')
+        .replace(/\r\n/g, '\n')
+        .trim();
+    if (!path ||
+        !message ||
+        !Number.isSafeInteger(candidate.startLine) ||
+        !Number.isSafeInteger(candidate.endLine) ||
+        candidate.startLine < 1 ||
+        candidate.endLine < candidate.startLine) {
+        throw new TypeError('Invalid PR publication candidate');
+    }
+    return (0,node_crypto__WEBPACK_IMPORTED_MODULE_0__.createHash)('sha256')
+        .update(JSON.stringify([
+        'publish-v1',
+        path,
+        candidate.startLine,
+        candidate.endLine,
+        message
+    ]))
+        .digest('hex');
+}
+function filterUnpublishedFindings(candidates, existingCommentBodies, formatMessage = message => message) {
+    const canonical = (value) => value.replace(/\r\n/g, '\n').trimEnd();
+    const existing = new Set(existingCommentBodies.map(canonical));
+    const withinRun = new Set();
+    const fresh = [];
+    for (const candidate of candidates) {
+        const formatted = {
+            path: candidate.path,
+            startLine: candidate.startLine,
+            endLine: candidate.endLine,
+            message: formatMessage(candidate.message)
+        };
+        const fp = publicationFingerprint(formatted);
+        const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`;
+        if (withinRun.has(fp) || existing.has(canonical(message)))
+            continue;
+        withinRun.add(fp);
+        fresh.push(candidate);
+    }
+    return fresh;
+}
+/** Pure replay planner: no GitHub API calls and no destructive comment cleanup. */
+function planReviewPublication(candidates, existingCommentBodies) {
+    const fresh = filterUnpublishedFindings(candidates, existingCommentBodies);
+    const pending = fresh.map(candidate => ({
+        ...candidate,
+        message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(candidate)} -->`
+    }));
+    return { pending, suppressed: candidates.length - pending.length };
+}
+/**
+ * Fetch every page without silently swallowing GitHub failures.
+ * The fetcher is injected for deterministic pagination/retry tests.
+ * A spoofed marker by a non-publishing user is never trusted.
+ */
+async function loadTrustedPublishedBodies(fetchPage, trustedLogin, trustedCommentTag, perPage = 100, maxPages = 1000) {
+    const tags = Array.isArray(trustedCommentTag)
+        ? trustedCommentTag
+        : [trustedCommentTag];
+    if (!trustedLogin ||
+        tags.length === 0 ||
+        tags.some(tag => typeof tag !== 'string' || tag.length === 0) ||
+        !Number.isSafeInteger(perPage) ||
+        perPage < 1 ||
+        perPage > 100 ||
+        !Number.isSafeInteger(maxPages) ||
+        maxPages < 1) {
+        throw new TypeError('Invalid trusted comment query');
+    }
+    const bodies = [];
+    for (let page = 1; page <= maxPages; page++) {
+        const records = await fetchPage(page, perPage);
+        if (!Array.isArray(records)) {
+            throw new Error('Unexpected GitHub review comments response');
+        }
+        if (records.length > perPage) {
+            throw new Error('GitHub review comments page exceeds requested size');
+        }
+        for (const comment of records) {
+            if (comment.user?.login === trustedLogin &&
+                typeof comment.body === 'string' &&
+                tags.some(tag => comment.body.includes(tag))) {
+                bodies.push(comment.body);
+            }
+        }
+        if (records.length < perPage)
+            return bodies;
+    }
+    throw new Error('Review-comment pagination exceeds safety limit');
+}
+/**
+ * Never use untrusted PR comments as state/checkpoint sources.
+ * GitHub (not user-supplied Markdown) attests to user.login.
+ */
+function findTrustedTaggedComment(comments, tag, trustedLogin) {
+    if (!tag || !trustedLogin)
+        throw new TypeError('Missing trusted comment identity');
+    for (const comment of comments) {
+        if (comment.user?.login === trustedLogin &&
+            typeof comment.body === 'string' &&
+            comment.body.includes(tag)) {
+            return comment;
+        }
+    }
+    return null;
+}
+
+
+/***/ }),
+
 /***/ 3123:
 /***/ ((__unused_webpack_module, __webpack_exports__, __nccwpck_require__) => {
 
@@ -6698,8 +6723,10 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 /* harmony export */ __nccwpck_require__.d(__webpack_exports__, {
 /* harmony export */   AY: () => (/* binding */ sanitizeFindingMessage),
 /* harmony export */   Kf: () => (/* binding */ selectTopFindings),
+/* harmony export */   Pw: () => (/* binding */ buildStructuredRepairPrompt),
 /* harmony export */   ZW: () => (/* binding */ processStructuredReview)
 /* harmony export */ });
+/* unused harmony export runStructuredReviewWithRepair */
 function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -6918,6 +6945,33 @@ function selectTopFindings(findings, cap) {
     const selected = sorted.slice(0, Math.max(0, cap));
     return { selected, omitted: Math.max(0, sorted.length - selected.length) };
 }
+function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage) {
+    return `Your previous JSON review response failed validation (${errorMessage}).
+Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.
+
+Previous invalid response:
+${previousResponse.slice(0, 4000)}
+
+Original review request (with diff):
+${reviewPrompt}`;
+}
+async function runStructuredReviewWithRepair(reviewPrompt, changed, diff, packedHunks, chat, onRepairAttempt) {
+    const response = await chat(reviewPrompt);
+    if (response === '')
+        return null;
+    try {
+        return processStructuredReview(response, changed, diff, packedHunks);
+    }
+    catch (err) {
+        onRepairAttempt?.();
+        const reason = err instanceof Error ? err.message : 'invalid schema';
+        const repaired = await chat(buildStructuredRepairPrompt(reviewPrompt, response, reason));
+        if (repaired === '') {
+            throw new Error('Empty repair response');
+        }
+        return processStructuredReview(repaired, changed, diff, packedHunks);
+    }
+}
 
 
 /***/ }),
@@ -7075,8 +7129,8 @@ function pLimit(concurrency) {
 	return generator;
 }
 
-// EXTERNAL MODULE: ./lib/commenter.js + 2 modules
-var lib_commenter = __nccwpck_require__(2615);
+// EXTERNAL MODULE: ./lib/commenter.js + 1 modules
+var lib_commenter = __nccwpck_require__(4735);
 // EXTERNAL MODULE: ./lib/inputs.js
 var lib_inputs = __nccwpck_require__(6107);
 // EXTERNAL MODULE: ./lib/octokit.js + 4 modules
@@ -7238,6 +7292,8 @@ const resolveReviewAnchor = (index, startLine, endLine) => {
 
 // EXTERNAL MODULE: ./lib/tokenizer.js
 var tokenizer = __nccwpck_require__(7134);
+// EXTERNAL MODULE: ./lib/review-dedup.js
+var review_dedup = __nccwpck_require__(3055);
 // EXTERNAL MODULE: ./lib/review-protocol.js
 var review_protocol = __nccwpck_require__(3123);
 ;// CONCATENATED MODULE: ./lib/pr-files.js
@@ -7969,6 +8025,7 @@ function summarizeReviewContextStatus(contexts) {
 
 
 
+
 // eslint-disable-next-line camelcase
 const context = github/* context */._;
 const repo = context.repo;
@@ -8546,7 +8603,8 @@ ${commentChain}
                 if (patchesPacked > 0) {
                     // perform review
                     try {
-                        const [response] = await heavyBot.chat(prompts.renderReviewFileDiff(ins), {});
+                        const reviewPrompt = prompts.renderReviewFileDiff(ins);
+                        const [response] = await heavyBot.chat(reviewPrompt, {});
                         if (response === '') {
                             (0,core.info)('review: nothing obtained from openai');
                             reviewsFailed.push(`${filename} (no response)`);
@@ -8555,14 +8613,14 @@ ${commentChain}
                         }
                         // Fail the entire file before publishing anything if the model
                         // omits a hunk, invents a location or cites non-existent source.
-                        // Allow one JSON/schema repair retry before failing the file.
                         let structured;
                         try {
                             structured = (0,review_protocol/* processStructuredReview */.ZW)(response, changedLineIndex, fileDiff, patchesPacked);
                         }
-                        catch {
-                            const repairPrompt = `Your previous response failed JSON schema validation. Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff. Previous output:\n${response.slice(0, 8000)}`;
-                            const [repaired] = await heavyBot.chat(repairPrompt, {});
+                        catch (err) {
+                            (0,core.warning)('Structured review validation failed; attempting 1 repair retry');
+                            const reason = err instanceof Error ? err.message : 'invalid schema';
+                            const [repaired] = await heavyBot.chat((0,review_protocol/* buildStructuredRepairPrompt */.Pw)(reviewPrompt, response, reason), {});
                             if (repaired === '') {
                                 throw new Error('Empty repair response');
                             }
@@ -8630,7 +8688,18 @@ ${commentChain}
                 }));
             }
             await Promise.all(reviewPromises);
-            const { selected: topFindings, omitted: omittedFindingsCount } = (0,review_protocol/* selectTopFindings */.Kf)(pendingFindings, MAX_PUBLISHABLE_FINDINGS);
+            let existingBodies = [];
+            if (pendingFindings.length > 0 && context.payload.pull_request != null) {
+                try {
+                    existingBodies = await commenter.publishedBotCommentBodies(context.payload.pull_request.number);
+                }
+                catch {
+                    // submitReview will re-check and refuse publication if GitHub read fails.
+                    existingBodies = [];
+                }
+            }
+            const freshFindings = (0,review_dedup/* filterUnpublishedFindings */.kL)(pendingFindings, existingBodies, lib_commenter/* formatReviewCommentBody */.lt);
+            const { selected: topFindings, omitted: omittedFindingsCount } = (0,review_protocol/* selectTopFindings */.Kf)(freshFindings, MAX_PUBLISHABLE_FINDINGS);
             for (const finding of topFindings) {
                 await commenter.bufferReviewComment(finding.path, finding.startLine, finding.endLine, finding.message);
                 reviewCount += 1;

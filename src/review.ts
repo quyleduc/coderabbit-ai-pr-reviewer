@@ -6,6 +6,7 @@ import {type Bot} from './bot'
 import {
   Commenter,
   COMMENT_REPLY_TAG,
+  formatReviewCommentBody,
   RAW_SUMMARY_END_TAG,
   RAW_SUMMARY_START_TAG,
   SHORT_SUMMARY_END_TAG,
@@ -23,7 +24,9 @@ import {
   splitPatch
 } from './diff-hunks'
 import {getTokenCount} from './tokenizer'
+import {filterUnpublishedFindings} from './review-dedup'
 import {
+  buildStructuredRepairPrompt,
   processStructuredReview,
   selectTopFindings,
   type FindingSeverity
@@ -803,10 +806,8 @@ ${commentChain}
         if (patchesPacked > 0) {
           // perform review
           try {
-            const [response] = await heavyBot.chat(
-              prompts.renderReviewFileDiff(ins),
-              {}
-            )
+            const reviewPrompt = prompts.renderReviewFileDiff(ins)
+            const [response] = await heavyBot.chat(reviewPrompt, {})
             if (response === '') {
               info('review: nothing obtained from openai')
               reviewsFailed.push(`${filename} (no response)`)
@@ -815,7 +816,6 @@ ${commentChain}
             }
             // Fail the entire file before publishing anything if the model
             // omits a hunk, invents a location or cites non-existent source.
-            // Allow one JSON/schema repair retry before failing the file.
             let structured: ReturnType<typeof processStructuredReview>
             try {
               structured = processStructuredReview(
@@ -824,12 +824,16 @@ ${commentChain}
                 fileDiff,
                 patchesPacked
               )
-            } catch {
-              const repairPrompt = `Your previous response failed JSON schema validation. Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff. Previous output:\n${response.slice(
-                0,
-                8000
-              )}`
-              const [repaired] = await heavyBot.chat(repairPrompt, {})
+            } catch (err) {
+              warning(
+                'Structured review validation failed; attempting 1 repair retry'
+              )
+              const reason =
+                err instanceof Error ? err.message : 'invalid schema'
+              const [repaired] = await heavyBot.chat(
+                buildStructuredRepairPrompt(reviewPrompt, response, reason),
+                {}
+              )
               if (repaired === '') {
                 throw new Error('Empty repair response')
               }
@@ -911,8 +915,24 @@ ${commentChain}
       }
 
       await Promise.all(reviewPromises)
+      let existingBodies: string[] = []
+      if (pendingFindings.length > 0 && context.payload.pull_request != null) {
+        try {
+          existingBodies = await commenter.publishedBotCommentBodies(
+            context.payload.pull_request.number
+          )
+        } catch {
+          // submitReview will re-check and refuse publication if GitHub read fails.
+          existingBodies = []
+        }
+      }
+      const freshFindings = filterUnpublishedFindings(
+        pendingFindings,
+        existingBodies,
+        formatReviewCommentBody
+      )
       const {selected: topFindings, omitted: omittedFindingsCount} =
-        selectTopFindings(pendingFindings, MAX_PUBLISHABLE_FINDINGS)
+        selectTopFindings(freshFindings, MAX_PUBLISHABLE_FINDINGS)
       for (const finding of topFindings) {
         await commenter.bufferReviewComment(
           finding.path,
