@@ -14,13 +14,63 @@ export interface PublishCandidate {
 
 const MARKER_PREFIX = 'coderabbit:published-finding-v1:'
 const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g
+const RULE_MARKER_PREFIX = 'coderabbit:published-rule-v1:'
+const RULE_MARKER_PATTERN =
+  /^<!--\s*coderabbit:published-rule-v1:([a-f0-9]{64})\s*-->$/gm
+const RULE_HEADING_PATTERN =
+  /^\*\*(?:HIGH|MEDIUM|LOW) \/ ([A-Z][A-Z0-9_]{2,63})\*\*$/m
+
+function extractRuleId(message: string): string | null {
+  const match = RULE_HEADING_PATTERN.exec(message)
+  return match ? match[1] : null
+}
+
+function normalizePath(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').trim()
+}
+
+export function ruleFingerprint(
+  candidate: Omit<PublishCandidate, 'message'>,
+  ruleId: string
+): string {
+  const path = normalizePath(candidate.path)
+  if (
+    !path ||
+    !Number.isSafeInteger(candidate.startLine) ||
+    candidate.startLine < 1 ||
+    !Number.isSafeInteger(candidate.endLine) ||
+    candidate.endLine < candidate.startLine ||
+    !/^[A-Z][A-Z0-9_]{2,63}$/.test(ruleId)
+  ) {
+    throw new TypeError('Invalid PR rule fingerprint input')
+  }
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        'rule-v1',
+        path,
+        candidate.startLine,
+        candidate.endLine,
+        ruleId
+      ])
+    )
+    .digest('hex')
+}
+
+function publishedRuleKeys(body: string): string[] {
+  const keys: string[] = []
+  for (const match of body.matchAll(RULE_MARKER_PATTERN)) {
+    keys.push(match[1])
+  }
+  return keys
+}
 
 export function publishedFingerprints(body: string): string[] {
   return [...body.matchAll(MARKER_REGEX)].map(m => m[1])
 }
 
 export function publicationFingerprint(candidate: PublishCandidate): string {
-  const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim()
+  const path = normalizePath(candidate.path)
   const message = candidate.message
     .replace(MARKER_REGEX, '')
     .replace(/\r\n/g, '\n')
@@ -58,7 +108,11 @@ export function filterUnpublishedFindings<T extends PublishCandidate>(
 ): T[] {
   const canonical = (value: string) => value.replace(/\r\n/g, '\n').trimEnd()
   const existing = new Set(existingCommentBodies.map(canonical))
+  const existingRules = new Set(
+    existingCommentBodies.flatMap(publishedRuleKeys)
+  )
   const withinRun = new Set<string>()
+  const withinRunRules = new Set<string>()
   const fresh: T[] = []
   for (const candidate of candidates) {
     const formatted = {
@@ -68,9 +122,20 @@ export function filterUnpublishedFindings<T extends PublishCandidate>(
       message: formatMessage(candidate.message)
     }
     const fp = publicationFingerprint(formatted)
-    const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
-    if (withinRun.has(fp) || existing.has(canonical(message))) continue
+    const ruleId = extractRuleId(formatted.message)
+    const ruleFp = ruleId ? ruleFingerprint(formatted, ruleId) : null
+    const ruleTag = ruleFp ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFp} -->` : ''
+    const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->${ruleTag}`
+    if (
+      withinRun.has(fp) ||
+      existing.has(canonical(message)) ||
+      (ruleFp !== null &&
+        (withinRunRules.has(ruleFp) || existingRules.has(ruleFp)))
+    ) {
+      continue
+    }
     withinRun.add(fp)
+    if (ruleFp !== null) withinRunRules.add(ruleFp)
     fresh.push(candidate)
   }
   return fresh
@@ -82,12 +147,18 @@ export function planReviewPublication(
   existingCommentBodies: readonly string[]
 ): {pending: PublishCandidate[]; suppressed: number} {
   const fresh = filterUnpublishedFindings(candidates, existingCommentBodies)
-  const pending = fresh.map(candidate => ({
-    ...candidate,
-    message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(
-      candidate
-    )} -->`
-  }))
+  const pending = fresh.map(candidate => {
+    const ruleId = extractRuleId(candidate.message)
+    const ruleTag = ruleId
+      ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFingerprint(candidate, ruleId)} -->`
+      : ''
+    return {
+      ...candidate,
+      message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(
+        candidate
+      )} -->${ruleTag}`
+    }
+  })
   return {pending, suppressed: candidates.length - pending.length}
 }
 

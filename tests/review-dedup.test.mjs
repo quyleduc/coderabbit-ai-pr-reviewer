@@ -205,3 +205,27 @@ test('dedup runs before severity cap so 3 old high findings do not starve a new 
     ['NEW-medium']
   )
 })
+
+test('semantic dedup suppresses reworded findings with same path, line, and rule_id while keeping distinct rules', () => {
+  const first = {
+    path: 'src/a.c',
+    startLine: 12,
+    endLine: 12,
+    message: '**HIGH / NULL_DEREF**\n\nPointer ptr may be NULL before dereference.'
+  }
+  const published = planReviewPublication([first], []).pending[0].message
+  const rewordedSameRule = {
+    ...first,
+    message: '**HIGH / NULL_DEREF**\n\nptr could be null here and crash.'
+  }
+  const differentRuleSameLine = {
+    ...first,
+    message: '**MEDIUM / BUFFER_OVERFLOW**\n\nIndex may exceed array bounds.'
+  }
+  const fresh = filterUnpublishedFindings(
+    [rewordedSameRule, differentRuleSameLine],
+    [published]
+  )
+  assert.equal(fresh.length, 1)
+  assert.match(fresh[0].message, /BUFFER_OVERFLOW/)
+})

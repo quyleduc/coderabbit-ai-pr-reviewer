@@ -825,8 +825,10 @@ ${commentChain}
                   'Structured review validation failed; attempting 1 repair retry'
                 )
               },
-              options.heavyTokenLimits.requestTokens,
-              getTokenCount
+              {
+                maxTokens: options.heavyTokenLimits.requestTokens,
+                countTokens: getTokenCount
+              }
             )
             if (structured === null) {
               info('review: nothing obtained from openai')

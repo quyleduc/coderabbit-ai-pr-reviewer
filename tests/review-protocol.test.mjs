@@ -230,6 +230,11 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
 
   // Over token budget -> drops oversized previousResponse while keeping error reason + original diff prompt
   let overBudgetPrompt = ''
+  let counterCalls = 0
+  const charCounter = text => {
+    counterCalls++
+    return text.length
+  }
   await runStructuredReviewWithRepair(
     'REVIEW_PROMPT_WITH_DIFF',
     validate,
@@ -241,8 +246,9 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
       return 'BAD_TOKEN '.repeat(200)
     },
     undefined,
-    120
+    {maxTokens: 400, countTokens: charCounter}
   )
+  assert.ok(counterCalls >= 2)
   assert.doesNotMatch(overBudgetPrompt, /Previous invalid response:/)
   assert.match(overBudgetPrompt, /REVIEW_PROMPT_WITH_DIFF/)
 
@@ -257,7 +263,7 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
         return 'not json'
       },
       undefined,
-      40
+      {maxTokens: 120, countTokens: text => text.length}
     ),
     /Repair prompt exceeds token budget/
   )

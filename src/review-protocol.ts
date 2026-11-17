@@ -284,15 +284,19 @@ export function selectTopFindings<
   return {selected, omitted: Math.max(0, sorted.length - selected.length)}
 }
 
+export interface RepairTokenBudget {
+  maxTokens: number
+  countTokens: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number
+}
+
 export function buildStructuredRepairPrompt(
   reviewPrompt: string,
   previousResponse: string,
   errorMessage: string,
-  maxTokens?: number,
-  countTokens: (
-    // eslint-disable-next-line no-unused-vars
-    text: string
-  ) => number = text => Math.ceil(text.length / 4)
+  tokenBudget?: RepairTokenBudget
 ): string {
   const header = `Your previous JSON review response failed validation (${errorMessage}).
 Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`
@@ -303,12 +307,15 @@ ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`
-  if (maxTokens !== undefined && countTokens(full) > maxTokens) {
+  if (
+    tokenBudget !== undefined &&
+    tokenBudget.countTokens(full) > tokenBudget.maxTokens
+  ) {
     const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`
-    if (countTokens(fallback) > maxTokens) {
+    if (tokenBudget.countTokens(fallback) > tokenBudget.maxTokens) {
       throw new Error('Repair prompt exceeds token budget')
     }
     return fallback
@@ -327,11 +334,7 @@ export async function runStructuredReviewWithRepair(
     prompt: string
   ) => Promise<string>,
   onRepairAttempt?: () => void,
-  maxRepairTokens?: number,
-  countTokens?: (
-    // eslint-disable-next-line no-unused-vars
-    text: string
-  ) => number
+  tokenBudget?: RepairTokenBudget
 ): Promise<StructuredReviewResult | null> {
   const response = await chat(reviewPrompt)
   if (response === '') return null
@@ -343,8 +346,7 @@ export async function runStructuredReviewWithRepair(
       reviewPrompt,
       response,
       reason,
-      maxRepairTokens,
-      countTokens
+      tokenBudget
     )
     onRepairAttempt?.()
     const repaired = await chat(repairPrompt)

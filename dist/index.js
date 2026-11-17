@@ -6593,17 +6593,54 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 /* harmony export */   kL: () => (/* binding */ filterUnpublishedFindings),
 /* harmony export */   yP: () => (/* binding */ findTrustedTaggedComment)
 /* harmony export */ });
-/* unused harmony exports publishedFingerprints, publicationFingerprint */
+/* unused harmony exports ruleFingerprint, publishedFingerprints, publicationFingerprint */
 /* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7598);
 /* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_crypto__WEBPACK_IMPORTED_MODULE_0__);
 
 const MARKER_PREFIX = 'coderabbit:published-finding-v1:';
 const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g;
+const RULE_MARKER_PREFIX = 'coderabbit:published-rule-v1:';
+const RULE_MARKER_PATTERN = /^<!--\s*coderabbit:published-rule-v1:([a-f0-9]{64})\s*-->$/gm;
+const RULE_HEADING_PATTERN = /^\*\*(?:HIGH|MEDIUM|LOW) \/ ([A-Z][A-Z0-9_]{2,63})\*\*$/m;
+function extractRuleId(message) {
+    const match = RULE_HEADING_PATTERN.exec(message);
+    return match ? match[1] : null;
+}
+function normalizePath(raw) {
+    return raw.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+}
+function ruleFingerprint(candidate, ruleId) {
+    const path = normalizePath(candidate.path);
+    if (!path ||
+        !Number.isSafeInteger(candidate.startLine) ||
+        candidate.startLine < 1 ||
+        !Number.isSafeInteger(candidate.endLine) ||
+        candidate.endLine < candidate.startLine ||
+        !/^[A-Z][A-Z0-9_]{2,63}$/.test(ruleId)) {
+        throw new TypeError('Invalid PR rule fingerprint input');
+    }
+    return (0,node_crypto__WEBPACK_IMPORTED_MODULE_0__.createHash)('sha256')
+        .update(JSON.stringify([
+        'rule-v1',
+        path,
+        candidate.startLine,
+        candidate.endLine,
+        ruleId
+    ]))
+        .digest('hex');
+}
+function publishedRuleKeys(body) {
+    const keys = [];
+    for (const match of body.matchAll(RULE_MARKER_PATTERN)) {
+        keys.push(match[1]);
+    }
+    return keys;
+}
 function publishedFingerprints(body) {
     return [...body.matchAll(MARKER_REGEX)].map(m => m[1]);
 }
 function publicationFingerprint(candidate) {
-    const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+    const path = normalizePath(candidate.path);
     const message = candidate.message
         .replace(MARKER_REGEX, '')
         .replace(/\r\n/g, '\n')
@@ -6629,7 +6666,9 @@ function publicationFingerprint(candidate) {
 function filterUnpublishedFindings(candidates, existingCommentBodies, formatMessage = message => message) {
     const canonical = (value) => value.replace(/\r\n/g, '\n').trimEnd();
     const existing = new Set(existingCommentBodies.map(canonical));
+    const existingRules = new Set(existingCommentBodies.flatMap(publishedRuleKeys));
     const withinRun = new Set();
+    const withinRunRules = new Set();
     const fresh = [];
     for (const candidate of candidates) {
         const formatted = {
@@ -6639,10 +6678,19 @@ function filterUnpublishedFindings(candidates, existingCommentBodies, formatMess
             message: formatMessage(candidate.message)
         };
         const fp = publicationFingerprint(formatted);
-        const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`;
-        if (withinRun.has(fp) || existing.has(canonical(message)))
+        const ruleId = extractRuleId(formatted.message);
+        const ruleFp = ruleId ? ruleFingerprint(formatted, ruleId) : null;
+        const ruleTag = ruleFp ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFp} -->` : '';
+        const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->${ruleTag}`;
+        if (withinRun.has(fp) ||
+            existing.has(canonical(message)) ||
+            (ruleFp !== null &&
+                (withinRunRules.has(ruleFp) || existingRules.has(ruleFp)))) {
             continue;
+        }
         withinRun.add(fp);
+        if (ruleFp !== null)
+            withinRunRules.add(ruleFp);
         fresh.push(candidate);
     }
     return fresh;
@@ -6650,10 +6698,16 @@ function filterUnpublishedFindings(candidates, existingCommentBodies, formatMess
 /** Pure replay planner: no GitHub API calls and no destructive comment cleanup. */
 function planReviewPublication(candidates, existingCommentBodies) {
     const fresh = filterUnpublishedFindings(candidates, existingCommentBodies);
-    const pending = fresh.map(candidate => ({
-        ...candidate,
-        message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(candidate)} -->`
-    }));
+    const pending = fresh.map(candidate => {
+        const ruleId = extractRuleId(candidate.message);
+        const ruleTag = ruleId
+            ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFingerprint(candidate, ruleId)} -->`
+            : '';
+        return {
+            ...candidate,
+            message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(candidate)} -->${ruleTag}`
+        };
+    });
     return { pending, suppressed: candidates.length - pending.length };
 }
 /**
@@ -6945,7 +6999,7 @@ function selectTopFindings(findings, cap) {
     const selected = sorted.slice(0, Math.max(0, cap));
     return { selected, omitted: Math.max(0, sorted.length - selected.length) };
 }
-function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage, maxTokens, countTokens = text => Math.ceil(text.length / 4)) {
+function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage, tokenBudget) {
     const header = `Your previous JSON review response failed validation (${errorMessage}).
 Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`;
     const full = `${header}
@@ -6955,19 +7009,20 @@ ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`;
-    if (maxTokens !== undefined && countTokens(full) > maxTokens) {
+    if (tokenBudget !== undefined &&
+        tokenBudget.countTokens(full) > tokenBudget.maxTokens) {
         const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`;
-        if (countTokens(fallback) > maxTokens) {
+        if (tokenBudget.countTokens(fallback) > tokenBudget.maxTokens) {
             throw new Error('Repair prompt exceeds token budget');
         }
         return fallback;
     }
     return full;
 }
-async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRepairAttempt, maxRepairTokens, countTokens) {
+async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRepairAttempt, tokenBudget) {
     const response = await chat(reviewPrompt);
     if (response === '')
         return null;
@@ -6976,7 +7031,7 @@ async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRep
     }
     catch (err) {
         const reason = err instanceof Error ? err.message : 'invalid schema';
-        const repairPrompt = buildStructuredRepairPrompt(reviewPrompt, response, reason, maxRepairTokens, countTokens);
+        const repairPrompt = buildStructuredRepairPrompt(reviewPrompt, response, reason, tokenBudget);
         onRepairAttempt?.();
         const repaired = await chat(repairPrompt);
         if (repaired === '') {
@@ -8622,7 +8677,10 @@ ${commentChain}
                             return reply;
                         }, () => {
                             (0,core.warning)('Structured review validation failed; attempting 1 repair retry');
-                        }, options.heavyTokenLimits.requestTokens, tokenizer/* getTokenCount */.N);
+                        }, {
+                            maxTokens: options.heavyTokenLimits.requestTokens,
+                            countTokens: tokenizer/* getTokenCount */.N
+                        });
                         if (structured === null) {
                             (0,core.info)('review: nothing obtained from openai');
                             reviewsFailed.push(`${filename} (no response)`);
