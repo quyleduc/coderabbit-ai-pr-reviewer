@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import {buildChangedLineIndex} from '../src/diff-hunks.ts'
 import {
   processStructuredReview,
-  sanitizeFindingMessage
+  runStructuredReviewWithRepair,
+  sanitizeFindingMessage,
+  selectTopFindings
 } from '../src/review-protocol.ts'
 import {planReviewPublication} from '../src/review-dedup.ts'
 import {publishReviewBatch} from '../src/review-publication.ts'
@@ -176,4 +178,104 @@ test('sanitizeFindingMessage requires matching backtick run lengths for code spa
   const validNested = sanitizeFindingMessage('Use ``a ` b`` and @bob')
   assert.match(validNested, /``a ` b``/)
   assert.doesNotMatch(validNested, /@bob/)
+})
+
+test('accepts plain fenced JSON without json tag while still rejecting untrusted prose', () => {
+  const plainFence = '```\n' + JSON.stringify({version: 1, hunks: [clean, issue]}) + '\n```'
+  const verified = processStructuredReview(plainFence, index, patch, 2)
+  assert.equal(verified.comments.length, 1)
+  assert.equal(verified.comments[0].severity, 'high')
+  assert.throws(
+    () => processStructuredReview('Here is the JSON:\n' + plainFence, index, patch, 2),
+    /one valid JSON/
+  )
+})
+
+test('selectTopFindings prioritizes high > medium > low deterministically and counts omitted', () => {
+  const candidates = [
+    {path: 'z.c', startLine: 1, endLine: 1, severity: 'low', message: 'l1'},
+    {path: 'a.c', startLine: 5, endLine: 5, severity: 'medium', message: 'm1'},
+    {path: 'b.c', startLine: 2, endLine: 2, severity: 'high', message: 'h2'},
+    {path: 'a.c', startLine: 10, endLine: 10, severity: 'high', message: 'h1'},
+    {path: 'c.c', startLine: 1, endLine: 1, severity: 'medium', message: 'm2'}
+  ]
+  const {selected, omitted} = selectTopFindings(candidates, 3)
+  assert.equal(omitted, 2)
+  assert.deepEqual(
+    selected.map(item => item.message),
+    ['h1', 'h2', 'm1']
+  )
+})
+
+test('runStructuredReviewWithRepair retries once with original diff prompt and handles failure paths', async () => {
+  const seenPrompts = []
+  const validJson = JSON.stringify({version: 1, hunks: [clean, issue]})
+  const validate = raw => processStructuredReview(raw, index, patch, 2)
+
+  // 1st invalid, 2nd valid -> succeeds and repair prompt includes original diff prompt + error reason
+  let turn = 0
+  const repaired = await runStructuredReviewWithRepair(
+    'REVIEW_PROMPT_WITH_DIFF',
+    validate,
+    async prompt => {
+      seenPrompts.push(prompt)
+      turn++
+      return turn === 1 ? 'not json at all' : validJson
+    }
+  )
+  assert.equal(repaired?.comments.length, 1)
+  assert.equal(seenPrompts.length, 2)
+  assert.match(seenPrompts[1], /REVIEW_PROMPT_WITH_DIFF/)
+  assert.match(seenPrompts[1], /one valid JSON object/)
+
+  // Over token budget -> drops oversized previousResponse while keeping error reason + original diff prompt
+  let overBudgetPrompt = ''
+  await runStructuredReviewWithRepair(
+    'REVIEW_PROMPT_WITH_DIFF',
+    validate,
+    async prompt => {
+      if (overBudgetPrompt === '' && prompt !== 'REVIEW_PROMPT_WITH_DIFF') {
+        overBudgetPrompt = prompt
+        return validJson
+      }
+      return 'BAD_TOKEN '.repeat(200)
+    },
+    undefined,
+    120
+  )
+  assert.doesNotMatch(overBudgetPrompt, /Previous invalid response:/)
+  assert.match(overBudgetPrompt, /REVIEW_PROMPT_WITH_DIFF/)
+
+  // Even fallback prompt exceeds budget -> aborts repair without calling chat a second time
+  let repairChatCalls = 0
+  await assert.rejects(
+    runStructuredReviewWithRepair(
+      'REVIEW_PROMPT_WITH_DIFF '.repeat(15),
+      validate,
+      async () => {
+        repairChatCalls++
+        return 'not json'
+      },
+      undefined,
+      40
+    ),
+    /Repair prompt exceeds token budget/
+  )
+  assert.equal(repairChatCalls, 1)
+
+  // Both invalid -> rejects
+  await assert.rejects(
+    runStructuredReviewWithRepair('DIFF_PROMPT', validate, async () => 'still bad'),
+    /one valid JSON/
+  )
+
+  // 1st invalid, 2nd empty -> rejects
+  let emptyTurn = 0
+  await assert.rejects(
+    runStructuredReviewWithRepair('DIFF_PROMPT', validate, async () => {
+      emptyTurn++
+      return emptyTurn === 1 ? 'bad' : ''
+    }),
+    /Empty repair response/
+  )
 })

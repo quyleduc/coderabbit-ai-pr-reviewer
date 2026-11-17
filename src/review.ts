@@ -6,6 +6,7 @@ import {type Bot} from './bot'
 import {
   Commenter,
   COMMENT_REPLY_TAG,
+  formatReviewCommentBody,
   RAW_SUMMARY_END_TAG,
   RAW_SUMMARY_START_TAG,
   SHORT_SUMMARY_END_TAG,
@@ -23,7 +24,13 @@ import {
   splitPatch
 } from './diff-hunks'
 import {getTokenCount} from './tokenizer'
-import {processStructuredReview} from './review-protocol'
+import {filterUnpublishedFindings} from './review-dedup'
+import {
+  processStructuredReview,
+  runStructuredReviewWithRepair,
+  selectTopFindings,
+  type FindingSeverity
+} from './review-protocol'
 import {loadCompletePullRequestFiles, verifyPullRequestPatch} from './pr-files'
 import {assessReviewCompletion, type CoverageStatus} from './review-integrity'
 import {HunkCoverage} from './review-hunks'
@@ -653,8 +660,14 @@ ${
       let lgtmCount = 0
       let reviewCount = 0
       let modelFindingsCount = 0
-      let publishableFindingsCount = 0
       let findingCapExceeded = false
+      const pendingFindings: Array<{
+        path: string
+        startLine: number
+        endLine: number
+        severity: FindingSeverity
+        message: string
+      }> = []
       const fileHunkLimit = new Map<string, number>()
       const doReview = async (
         filename: string,
@@ -793,40 +806,47 @@ ${commentChain}
         if (patchesPacked > 0) {
           // perform review
           try {
-            const [response] = await heavyBot.chat(
-              prompts.renderReviewFileDiff(ins),
-              {}
+            const reviewPrompt = prompts.renderReviewFileDiff(ins)
+            const structured = await runStructuredReviewWithRepair(
+              reviewPrompt,
+              response =>
+                processStructuredReview(
+                  response,
+                  changedLineIndex,
+                  fileDiff,
+                  patchesPacked
+                ),
+              async prompt => {
+                const [reply] = await heavyBot.chat(prompt, {})
+                return reply
+              },
+              () => {
+                warning(
+                  'Structured review validation failed; attempting 1 repair retry'
+                )
+              },
+              options.heavyTokenLimits.requestTokens,
+              getTokenCount
             )
-            if (response === '') {
+            if (structured === null) {
               info('review: nothing obtained from openai')
               reviewsFailed.push(`${filename} (no response)`)
               hunkCoverage.markFile(filename, 'failed_analysis')
               return
             }
-            // Fail the entire file before publishing anything if the model
-            // omits a hunk, invents a location or cites non-existent source.
-            const structured = processStructuredReview(
-              response,
-              changedLineIndex,
-              fileDiff,
-              patchesPacked
-            )
             for (const finding of structured.comments) {
               modelFindingsCount += 1
               if (modelFindingsCount > MAX_MODEL_FINDINGS) {
                 findingCapExceeded = true
                 continue
               }
-              if (publishableFindingsCount < MAX_PUBLISHABLE_FINDINGS) {
-                publishableFindingsCount += 1
-                await commenter.bufferReviewComment(
-                  filename,
-                  finding.startLine,
-                  finding.endLine,
-                  finding.message
-                )
-                reviewCount += 1
-              }
+              pendingFindings.push({
+                path: filename,
+                startLine: finding.startLine,
+                endLine: finding.endLine,
+                severity: finding.severity,
+                message: finding.message
+              })
             }
             for (const cleanHunk of structured.cleanHunks) {
               lgtmCount += 1
@@ -885,6 +905,33 @@ ${commentChain}
       }
 
       await Promise.all(reviewPromises)
+      let existingBodies: string[] = []
+      if (pendingFindings.length > 0 && context.payload.pull_request != null) {
+        try {
+          existingBodies = await commenter.publishedBotCommentBodies(
+            context.payload.pull_request.number
+          )
+        } catch {
+          // submitReview will re-check and refuse publication if GitHub read fails.
+          existingBodies = []
+        }
+      }
+      const freshFindings = filterUnpublishedFindings(
+        pendingFindings,
+        existingBodies,
+        formatReviewCommentBody
+      )
+      const {selected: topFindings, omitted: omittedFindingsCount} =
+        selectTopFindings(freshFindings, MAX_PUBLISHABLE_FINDINGS)
+      for (const finding of topFindings) {
+        await commenter.bufferReviewComment(
+          finding.path,
+          finding.startLine,
+          finding.endLine,
+          finding.message
+        )
+        reviewCount += 1
+      }
       statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`
 
       for (const [filename] of filesAndChangesReview) {
@@ -946,7 +993,11 @@ ${
 <summary>Review comments generated (${reviewCount + lgtmCount})</summary>
 
 * Review: ${reviewCount}
-* LGTM: ${lgtmCount}
+* LGTM: ${lgtmCount}${
+        omittedFindingsCount > 0
+          ? `\n* Omitted (cap ${MAX_PUBLISHABLE_FINDINGS}): ${omittedFindingsCount}`
+          : ''
+      }
 
 </details>
 

@@ -1,8 +1,11 @@
 import type {ChangedLineIndex} from './diff-hunks'
 
+export type FindingSeverity = 'high' | 'medium' | 'low'
+
 export interface StructuredReviewComment {
   startLine: number
   endLine: number
+  severity: FindingSeverity
   message: string
 }
 
@@ -34,7 +37,7 @@ function parseJsonResponse(text: string): unknown {
   if (text.length > 262144)
     throw new Error('Review protocol exceeds response size limit')
   let raw = text.trim()
-  const fenced = /^\x60{3}json\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw)
+  const fenced = /^\x60{3}(?:json)?\s*\n([\s\S]*?)\n\x60{3}$/i.exec(raw)
   if (fenced) raw = fenced[1]
   try {
     return JSON.parse(raw) as unknown
@@ -240,6 +243,7 @@ export function processStructuredReview(
       comments.push({
         startLine: line,
         endLine: line,
+        severity: finding.severity,
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
         }**\n\n${sanitizedMessage}`
@@ -250,5 +254,103 @@ export function processStructuredReview(
     reviewedHunks: [...seen].sort((a, b) => a - b),
     cleanHunks: cleanHunks.sort((a, b) => a - b),
     comments
+  }
+}
+
+const SEVERITY_RANK: Record<FindingSeverity, number> = {
+  high: 0,
+  medium: 1,
+  low: 2
+}
+
+export function selectTopFindings<
+  T extends {
+    path: string
+    startLine: number
+    endLine: number
+    severity: FindingSeverity
+    message: string
+  }
+>(findings: readonly T[], cap: number): {selected: T[]; omitted: number} {
+  const sorted = [...findings].sort(
+    (a, b) =>
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
+      (a.path < b.path ? -1 : a.path > b.path ? 1 : 0) ||
+      a.startLine - b.startLine ||
+      a.endLine - b.endLine ||
+      (a.message < b.message ? -1 : a.message > b.message ? 1 : 0)
+  )
+  const selected = sorted.slice(0, Math.max(0, cap))
+  return {selected, omitted: Math.max(0, sorted.length - selected.length)}
+}
+
+export function buildStructuredRepairPrompt(
+  reviewPrompt: string,
+  previousResponse: string,
+  errorMessage: string,
+  maxTokens?: number,
+  countTokens: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number = text => Math.ceil(text.length / 4)
+): string {
+  const header = `Your previous JSON review response failed validation (${errorMessage}).
+Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`
+  const full = `${header}
+
+Previous invalid response:
+${previousResponse.slice(0, 4000)}
+
+Original review request (with diff):
+${reviewPrompt}`
+  if (maxTokens !== undefined && countTokens(full) > maxTokens) {
+    const fallback = `${header}
+
+Original review request (with diff):
+${reviewPrompt}`
+    if (countTokens(fallback) > maxTokens) {
+      throw new Error('Repair prompt exceeds token budget')
+    }
+    return fallback
+  }
+  return full
+}
+
+export async function runStructuredReviewWithRepair(
+  reviewPrompt: string,
+  validate: (
+    // eslint-disable-next-line no-unused-vars
+    response: string
+  ) => StructuredReviewResult,
+  chat: (
+    // eslint-disable-next-line no-unused-vars
+    prompt: string
+  ) => Promise<string>,
+  onRepairAttempt?: () => void,
+  maxRepairTokens?: number,
+  countTokens?: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number
+): Promise<StructuredReviewResult | null> {
+  const response = await chat(reviewPrompt)
+  if (response === '') return null
+  try {
+    return validate(response)
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : 'invalid schema'
+    const repairPrompt = buildStructuredRepairPrompt(
+      reviewPrompt,
+      response,
+      reason,
+      maxRepairTokens,
+      countTokens
+    )
+    onRepairAttempt?.()
+    const repaired = await chat(repairPrompt)
+    if (repaired === '') {
+      throw new Error('Empty repair response')
+    }
+    return validate(repaired)
   }
 }

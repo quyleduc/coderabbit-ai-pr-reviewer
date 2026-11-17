@@ -1,12 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  filterUnpublishedFindings,
   planReviewPublication,
   publicationFingerprint,
   publishedFingerprints,
   loadTrustedPublishedBodies,
   findTrustedTaggedComment
 } from '../src/review-dedup.ts'
+import {selectTopFindings} from '../src/review-protocol.ts'
 
 const finding = {
   path: 'src/main.c',
@@ -172,4 +174,34 @@ test('dedup retains findings whose top-level comment was updated to COMMENT_REPL
   assert.equal(bodies.length, 1)
   const normalized = bodies.map(body => body.replaceAll(replyTag, commentTag))
   assert.equal(planReviewPublication([taggedFinding], normalized).pending.length, 0)
+})
+
+test('dedup runs before severity cap so 3 old high findings do not starve a new medium finding', () => {
+  const highFindings = [1, 2, 3].map(line => ({
+    path: 'src/a.c',
+    startLine: line,
+    endLine: line,
+    severity: 'high',
+    message: `High issue ${line}`
+  }))
+  const existingBodies = planReviewPublication(highFindings, []).pending.map(
+    item => item.message
+  )
+  const rerunCandidates = [
+    ...highFindings,
+    {
+      path: 'src/b.c',
+      startLine: 10,
+      endLine: 10,
+      severity: 'medium',
+      message: 'NEW-medium'
+    }
+  ]
+  const fresh = filterUnpublishedFindings(rerunCandidates, existingBodies)
+  const {selected, omitted} = selectTopFindings(fresh, 3)
+  assert.equal(omitted, 0)
+  assert.deepEqual(
+    selected.map(item => item.message),
+    ['NEW-medium']
+  )
 })
