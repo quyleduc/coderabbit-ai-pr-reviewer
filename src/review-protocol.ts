@@ -6,7 +6,7 @@ export interface StructuredReviewComment {
   startLine: number
   endLine: number
   severity: FindingSeverity
-  evidence: string
+  evidence?: string
   message: string
 }
 
@@ -49,9 +49,11 @@ function parseJsonResponse(text: string): unknown {
 
 function addedSourceLines(diff: string): {
   texts: Map<number, string>
+  counts: Map<string, number>
   hunks: number
 } {
   const texts = new Map<number, string>()
+  const counts = new Map<string, number>()
   let cursor = 0
   let hunks = 0
   for (const source of diff.split(/\r?\n/)) {
@@ -61,13 +63,16 @@ function addedSourceLines(diff: string): {
       hunks++
     } else if (hunks > 0 && source.startsWith('+')) {
       if (texts.has(cursor)) throw new Error('Overlapping diff hunks')
-      texts.set(cursor, source.slice(1).trim())
+      const lineText = source.slice(1).trim()
+      const norm = lineText.replace(/\s+/g, ' ')
+      texts.set(cursor, lineText)
+      counts.set(norm, (counts.get(norm) ?? 0) + 1)
       cursor++
     } else if (hunks > 0 && source.startsWith(' ')) {
       cursor++
     }
   }
-  return {texts, hunks}
+  return {texts, counts, hunks}
 }
 
 function sanitizeProseSegment(text: string): string {
@@ -246,11 +251,15 @@ export function processStructuredReview(
       if (sanitizedMessage.length < 8) {
         throw new Error('Invalid finding message')
       }
+      const trimmedEvidence = finding.evidence.trim()
+      const normEvidence = trimmedEvidence.replace(/\s+/g, ' ')
+      const isUniqueEvidence = (added.counts.get(normEvidence) ?? 0) <= 1
       comments.push({
         startLine: line,
         endLine: line,
         severity: finding.severity,
-        evidence: finding.evidence.trim(),
+        // Repeated lines fall back to exact-match dedup so distinct locations aren't collapsed.
+        ...(isUniqueEvidence ? {evidence: trimmedEvidence} : {}),
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
         }**\n\n${sanitizedMessage}`

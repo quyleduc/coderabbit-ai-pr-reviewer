@@ -666,7 +666,7 @@ ${
         startLine: number
         endLine: number
         severity: FindingSeverity
-        evidence: string
+        evidence?: string
         message: string
       }> = []
       const fileHunkLimit = new Map<string, number>()

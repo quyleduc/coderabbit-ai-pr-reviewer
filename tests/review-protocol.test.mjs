@@ -294,3 +294,49 @@ test('runStructuredReviewWithRepair retries once with original diff prompt and h
     /Empty repair response/
   )
 })
+
+test('repeated added lines omit evidence so distinct locations with same rule_id are not collapsed', async () => {
+  const {buildChangedLineIndex} = await import('../src/diff-hunks.ts')
+  const {planReviewPublication} = await import('../src/review-dedup.ts')
+  const dupPatch = '@@ -1,0 +1,4 @@\n+p = q->x;\n+other();\n+p = q->x;\n+done();\n'
+  const dupIndex = buildChangedLineIndex(dupPatch)
+  const resp = JSON.stringify({
+    version: 1,
+    hunks: [
+      {
+        id: 'h0',
+        status: 'issues',
+        findings: [
+          {
+            line: 1,
+            rule_id: 'NULL_DEREF',
+            severity: 'high',
+            message: 'Pointer q may be null at first access.',
+            evidence: 'p = q->x;'
+          },
+          {
+            line: 3,
+            rule_id: 'NULL_DEREF',
+            severity: 'high',
+            message: 'Pointer q may be null at second access.',
+            evidence: 'p = q->x;'
+          }
+        ]
+      }
+    ]
+  })
+  const verified = processStructuredReview(resp, dupIndex, dupPatch, 1)
+  assert.equal(verified.comments.length, 2)
+  assert.equal(verified.comments[0].evidence, undefined)
+  assert.equal(verified.comments[1].evidence, undefined)
+
+  const publishedFirst = planReviewPublication(
+    [{path: 'src/a.c', ...verified.comments[0]}],
+    []
+  ).pending[0].message
+  const second = planReviewPublication(
+    [{path: 'src/a.c', ...verified.comments[1]}],
+    [publishedFirst]
+  )
+  assert.equal(second.pending.length, 1)
+})
