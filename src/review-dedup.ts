@@ -10,17 +10,67 @@ export interface PublishCandidate {
   startLine: number
   endLine: number
   message: string
+  evidence?: string
 }
 
 const MARKER_PREFIX = 'coderabbit:published-finding-v1:'
 const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g
+const RULE_MARKER_PREFIX = 'coderabbit:published-rule-v1:'
+const TRAILING_RULE_MARKER_PATTERN =
+  /<!--\s*coderabbit:published-rule-v1:([a-f0-9]{64})\s*-->$/
+const RULE_HEADING_PATTERN =
+  /^\*\*(?:HIGH|MEDIUM|LOW) \/ ([A-Z][A-Z0-9_]{2,63})\*\*$/m
+const GENERIC_RULE_IDS = new Set(['OTHER_DEFECT', 'OTHER', 'GENERAL', 'STYLE'])
+
+function extractRuleId(message: string): string | null {
+  const match = RULE_HEADING_PATTERN.exec(message)
+  if (!match) return null
+  return GENERIC_RULE_IDS.has(match[1]) ? null : match[1]
+}
+
+function normalizePath(raw: string): string {
+  return raw.replace(/\\/g, '/').replace(/^\.\//, '').trim()
+}
+
+function normalizeEvidence(raw: string): string {
+  return raw.trim().replace(/\s+/g, ' ')
+}
+
+export function ruleFingerprint(
+  pathInput: string,
+  ruleId: string,
+  evidence: string
+): string {
+  const path = normalizePath(pathInput)
+  const normalizedEvidence = normalizeEvidence(evidence)
+  if (
+    !path ||
+    !normalizedEvidence ||
+    !/^[A-Z][A-Z0-9_]{2,63}$/.test(ruleId) ||
+    GENERIC_RULE_IDS.has(ruleId)
+  ) {
+    throw new TypeError('Invalid PR rule fingerprint input')
+  }
+  const evidenceHash = createHash('sha256')
+    .update(normalizedEvidence)
+    .digest('hex')
+  return createHash('sha256')
+    .update(JSON.stringify(['rule-v2', path, ruleId, evidenceHash]))
+    .digest('hex')
+}
+
+function publishedRuleKeys(body: string): string[] {
+  const lastLine = body.trimEnd().split(/\r?\n/).at(-1) ?? ''
+  const match = TRAILING_RULE_MARKER_PATTERN.exec(lastLine)
+  return match ? [match[1]] : []
+}
 
 export function publishedFingerprints(body: string): string[] {
   return [...body.matchAll(MARKER_REGEX)].map(m => m[1])
 }
 
 export function publicationFingerprint(candidate: PublishCandidate): string {
-  const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim()
+  const path = normalizePath(candidate.path)
   const message = candidate.message
     .replace(MARKER_REGEX, '')
     .replace(/\r\n/g, '\n')
@@ -58,6 +108,9 @@ export function filterUnpublishedFindings<T extends PublishCandidate>(
 ): T[] {
   const canonical = (value: string) => value.replace(/\r\n/g, '\n').trimEnd()
   const existing = new Set(existingCommentBodies.map(canonical))
+  const existingRules = new Set(
+    existingCommentBodies.flatMap(publishedRuleKeys)
+  )
   const withinRun = new Set<string>()
   const fresh: T[] = []
   for (const candidate of candidates) {
@@ -68,8 +121,26 @@ export function filterUnpublishedFindings<T extends PublishCandidate>(
       message: formatMessage(candidate.message)
     }
     const fp = publicationFingerprint(formatted)
-    const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
-    if (withinRun.has(fp) || existing.has(canonical(message))) continue
+    const ruleId = extractRuleId(formatted.message)
+    const evidence = candidate.evidence
+      ? normalizeEvidence(candidate.evidence)
+      : ''
+    const ruleFp =
+      ruleId && evidence
+        ? ruleFingerprint(formatted.path, ruleId, evidence)
+        : null
+    const baseMessage = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`
+    const fullMessage = ruleFp
+      ? `${baseMessage}\n<!-- ${RULE_MARKER_PREFIX}${ruleFp} -->`
+      : baseMessage
+    if (
+      withinRun.has(fp) ||
+      existing.has(canonical(baseMessage)) ||
+      existing.has(canonical(fullMessage)) ||
+      (ruleFp !== null && existingRules.has(ruleFp))
+    ) {
+      continue
+    }
     withinRun.add(fp)
     fresh.push(candidate)
   }
@@ -82,12 +153,26 @@ export function planReviewPublication(
   existingCommentBodies: readonly string[]
 ): {pending: PublishCandidate[]; suppressed: number} {
   const fresh = filterUnpublishedFindings(candidates, existingCommentBodies)
-  const pending = fresh.map(candidate => ({
-    ...candidate,
-    message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(
-      candidate
-    )} -->`
-  }))
+  const pending = fresh.map(candidate => {
+    const ruleId = extractRuleId(candidate.message)
+    const evidence = candidate.evidence
+      ? normalizeEvidence(candidate.evidence)
+      : ''
+    const ruleTag =
+      ruleId && evidence
+        ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFingerprint(
+            candidate.path,
+            ruleId,
+            evidence
+          )} -->`
+        : ''
+    return {
+      ...candidate,
+      message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(
+        candidate
+      )} -->${ruleTag}`
+    }
+  })
   return {pending, suppressed: candidates.length - pending.length}
 }
 

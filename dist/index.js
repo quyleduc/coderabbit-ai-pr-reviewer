@@ -1033,12 +1033,13 @@ ${tag}`;
         }
     }
     reviewCommentsBuffer = [];
-    async bufferReviewComment(path, startLine, endLine, message) {
+    async bufferReviewComment(path, startLine, endLine, message, evidence) {
         this.reviewCommentsBuffer.push({
             path,
             startLine,
             endLine,
-            message: formatReviewCommentBody(message)
+            message: formatReviewCommentBody(message),
+            evidence
         });
     }
     async deletePendingReview(pullNumber) {
@@ -6593,17 +6594,54 @@ const handleReviewComment = async (heavyBot, options, prompts) => {
 /* harmony export */   kL: () => (/* binding */ filterUnpublishedFindings),
 /* harmony export */   yP: () => (/* binding */ findTrustedTaggedComment)
 /* harmony export */ });
-/* unused harmony exports publishedFingerprints, publicationFingerprint */
+/* unused harmony exports ruleFingerprint, publishedFingerprints, publicationFingerprint */
 /* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0__ = __nccwpck_require__(7598);
 /* harmony import */ var node_crypto__WEBPACK_IMPORTED_MODULE_0___default = /*#__PURE__*/__nccwpck_require__.n(node_crypto__WEBPACK_IMPORTED_MODULE_0__);
 
 const MARKER_PREFIX = 'coderabbit:published-finding-v1:';
 const MARKER_REGEX = /<!-- coderabbit:published-finding-v1:([0-9a-f]{64}) -->/g;
+const RULE_MARKER_PREFIX = 'coderabbit:published-rule-v1:';
+const TRAILING_RULE_MARKER_PATTERN = /<!--\s*coderabbit:published-rule-v1:([a-f0-9]{64})\s*-->$/;
+const RULE_HEADING_PATTERN = /^\*\*(?:HIGH|MEDIUM|LOW) \/ ([A-Z][A-Z0-9_]{2,63})\*\*$/m;
+const GENERIC_RULE_IDS = new Set(['OTHER_DEFECT', 'OTHER', 'GENERAL', 'STYLE']);
+function extractRuleId(message) {
+    const match = RULE_HEADING_PATTERN.exec(message);
+    if (!match)
+        return null;
+    return GENERIC_RULE_IDS.has(match[1]) ? null : match[1];
+}
+function normalizePath(raw) {
+    return raw.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+}
+function normalizeEvidence(raw) {
+    return raw.trim().replace(/\s+/g, ' ');
+}
+function ruleFingerprint(pathInput, ruleId, evidence) {
+    const path = normalizePath(pathInput);
+    const normalizedEvidence = normalizeEvidence(evidence);
+    if (!path ||
+        !normalizedEvidence ||
+        !/^[A-Z][A-Z0-9_]{2,63}$/.test(ruleId) ||
+        GENERIC_RULE_IDS.has(ruleId)) {
+        throw new TypeError('Invalid PR rule fingerprint input');
+    }
+    const evidenceHash = (0,node_crypto__WEBPACK_IMPORTED_MODULE_0__.createHash)('sha256')
+        .update(normalizedEvidence)
+        .digest('hex');
+    return (0,node_crypto__WEBPACK_IMPORTED_MODULE_0__.createHash)('sha256')
+        .update(JSON.stringify(['rule-v2', path, ruleId, evidenceHash]))
+        .digest('hex');
+}
+function publishedRuleKeys(body) {
+    const lastLine = body.trimEnd().split(/\r?\n/).at(-1) ?? '';
+    const match = TRAILING_RULE_MARKER_PATTERN.exec(lastLine);
+    return match ? [match[1]] : [];
+}
 function publishedFingerprints(body) {
     return [...body.matchAll(MARKER_REGEX)].map(m => m[1]);
 }
 function publicationFingerprint(candidate) {
-    const path = candidate.path.replace(/\\/g, '/').replace(/^\.\//, '').trim();
+    const path = normalizePath(candidate.path);
     const message = candidate.message
         .replace(MARKER_REGEX, '')
         .replace(/\r\n/g, '\n')
@@ -6629,6 +6667,7 @@ function publicationFingerprint(candidate) {
 function filterUnpublishedFindings(candidates, existingCommentBodies, formatMessage = message => message) {
     const canonical = (value) => value.replace(/\r\n/g, '\n').trimEnd();
     const existing = new Set(existingCommentBodies.map(canonical));
+    const existingRules = new Set(existingCommentBodies.flatMap(publishedRuleKeys));
     const withinRun = new Set();
     const fresh = [];
     for (const candidate of candidates) {
@@ -6639,9 +6678,23 @@ function filterUnpublishedFindings(candidates, existingCommentBodies, formatMess
             message: formatMessage(candidate.message)
         };
         const fp = publicationFingerprint(formatted);
-        const message = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`;
-        if (withinRun.has(fp) || existing.has(canonical(message)))
+        const ruleId = extractRuleId(formatted.message);
+        const evidence = candidate.evidence
+            ? normalizeEvidence(candidate.evidence)
+            : '';
+        const ruleFp = ruleId && evidence
+            ? ruleFingerprint(formatted.path, ruleId, evidence)
+            : null;
+        const baseMessage = `${formatted.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${fp} -->`;
+        const fullMessage = ruleFp
+            ? `${baseMessage}\n<!-- ${RULE_MARKER_PREFIX}${ruleFp} -->`
+            : baseMessage;
+        if (withinRun.has(fp) ||
+            existing.has(canonical(baseMessage)) ||
+            existing.has(canonical(fullMessage)) ||
+            (ruleFp !== null && existingRules.has(ruleFp))) {
             continue;
+        }
         withinRun.add(fp);
         fresh.push(candidate);
     }
@@ -6650,10 +6703,19 @@ function filterUnpublishedFindings(candidates, existingCommentBodies, formatMess
 /** Pure replay planner: no GitHub API calls and no destructive comment cleanup. */
 function planReviewPublication(candidates, existingCommentBodies) {
     const fresh = filterUnpublishedFindings(candidates, existingCommentBodies);
-    const pending = fresh.map(candidate => ({
-        ...candidate,
-        message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(candidate)} -->`
-    }));
+    const pending = fresh.map(candidate => {
+        const ruleId = extractRuleId(candidate.message);
+        const evidence = candidate.evidence
+            ? normalizeEvidence(candidate.evidence)
+            : '';
+        const ruleTag = ruleId && evidence
+            ? `\n<!-- ${RULE_MARKER_PREFIX}${ruleFingerprint(candidate.path, ruleId, evidence)} -->`
+            : '';
+        return {
+            ...candidate,
+            message: `${candidate.message.trimEnd()}\n\n<!-- ${MARKER_PREFIX}${publicationFingerprint(candidate)} -->${ruleTag}`
+        };
+    });
     return { pending, suppressed: candidates.length - pending.length };
 }
 /**
@@ -6753,6 +6815,7 @@ function parseJsonResponse(text) {
 }
 function addedSourceLines(diff) {
     const texts = new Map();
+    const counts = new Map();
     let cursor = 0;
     let hunks = 0;
     for (const source of diff.split(/\r?\n/)) {
@@ -6764,14 +6827,17 @@ function addedSourceLines(diff) {
         else if (hunks > 0 && source.startsWith('+')) {
             if (texts.has(cursor))
                 throw new Error('Overlapping diff hunks');
-            texts.set(cursor, source.slice(1).trim());
+            const lineText = source.slice(1).trim();
+            const norm = lineText.replace(/\s+/g, ' ');
+            texts.set(cursor, lineText);
+            counts.set(norm, (counts.get(norm) ?? 0) + 1);
             cursor++;
         }
         else if (hunks > 0 && source.startsWith(' ')) {
             cursor++;
         }
     }
-    return { texts, hunks };
+    return { texts, counts, hunks };
 }
 function sanitizeProseSegment(text) {
     return text
@@ -6827,7 +6893,9 @@ function sanitizeFindingMessage(raw) {
         proseStart = end;
         i = end;
     }
-    return out + sanitizeProseSegment(text.slice(proseStart));
+    const sanitized = out + sanitizeProseSegment(text.slice(proseStart));
+    // Neutralize spoofed dedup markers even inside backticks/fences.
+    return sanitized.replace(/coderabbit:published-/gi, 'coderabbit\u200b:published-');
 }
 /**
  * Strict model-to-publisher contract:
@@ -6917,10 +6985,15 @@ function processStructuredReview(response, changed, diff, packedHunks) {
             if (sanitizedMessage.length < 8) {
                 throw new Error('Invalid finding message');
             }
+            const trimmedEvidence = finding.evidence.trim();
+            const normEvidence = trimmedEvidence.replace(/\s+/g, ' ');
+            const isUniqueEvidence = (added.counts.get(normEvidence) ?? 0) <= 1;
             comments.push({
                 startLine: line,
                 endLine: line,
                 severity: finding.severity,
+                // Repeated lines fall back to exact-match dedup so distinct locations aren't collapsed.
+                ...(isUniqueEvidence ? { evidence: trimmedEvidence } : {}),
                 message: `**${String(finding.severity).toUpperCase()} / ${finding.rule_id}**\n\n${sanitizedMessage}`
             });
         }
@@ -6945,7 +7018,7 @@ function selectTopFindings(findings, cap) {
     const selected = sorted.slice(0, Math.max(0, cap));
     return { selected, omitted: Math.max(0, sorted.length - selected.length) };
 }
-function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage, maxTokens, countTokens = text => Math.ceil(text.length / 4)) {
+function buildStructuredRepairPrompt(reviewPrompt, previousResponse, errorMessage, tokenBudget) {
     const header = `Your previous JSON review response failed validation (${errorMessage}).
 Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`;
     const full = `${header}
@@ -6955,19 +7028,20 @@ ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`;
-    if (maxTokens !== undefined && countTokens(full) > maxTokens) {
+    if (tokenBudget !== undefined &&
+        tokenBudget.countTokens(full) > tokenBudget.maxTokens) {
         const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`;
-        if (countTokens(fallback) > maxTokens) {
+        if (tokenBudget.countTokens(fallback) > tokenBudget.maxTokens) {
             throw new Error('Repair prompt exceeds token budget');
         }
         return fallback;
     }
     return full;
 }
-async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRepairAttempt, maxRepairTokens, countTokens) {
+async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRepairAttempt, tokenBudget) {
     const response = await chat(reviewPrompt);
     if (response === '')
         return null;
@@ -6976,7 +7050,7 @@ async function runStructuredReviewWithRepair(reviewPrompt, validate, chat, onRep
     }
     catch (err) {
         const reason = err instanceof Error ? err.message : 'invalid schema';
-        const repairPrompt = buildStructuredRepairPrompt(reviewPrompt, response, reason, maxRepairTokens, countTokens);
+        const repairPrompt = buildStructuredRepairPrompt(reviewPrompt, response, reason, tokenBudget);
         onRepairAttempt?.();
         const repaired = await chat(repairPrompt);
         if (repaired === '') {
@@ -8622,7 +8696,10 @@ ${commentChain}
                             return reply;
                         }, () => {
                             (0,core.warning)('Structured review validation failed; attempting 1 repair retry');
-                        }, options.heavyTokenLimits.requestTokens, tokenizer/* getTokenCount */.N);
+                        }, {
+                            maxTokens: options.heavyTokenLimits.requestTokens,
+                            countTokens: tokenizer/* getTokenCount */.N
+                        });
                         if (structured === null) {
                             (0,core.info)('review: nothing obtained from openai');
                             reviewsFailed.push(`${filename} (no response)`);
@@ -8640,6 +8717,7 @@ ${commentChain}
                                 startLine: finding.startLine,
                                 endLine: finding.endLine,
                                 severity: finding.severity,
+                                evidence: finding.evidence,
                                 message: finding.message
                             });
                         }
@@ -8704,7 +8782,7 @@ ${commentChain}
             const freshFindings = (0,review_dedup/* filterUnpublishedFindings */.kL)(pendingFindings, existingBodies, lib_commenter/* formatReviewCommentBody */.lt);
             const { selected: topFindings, omitted: omittedFindingsCount } = (0,review_protocol/* selectTopFindings */.Kf)(freshFindings, MAX_PUBLISHABLE_FINDINGS);
             for (const finding of topFindings) {
-                await commenter.bufferReviewComment(finding.path, finding.startLine, finding.endLine, finding.message);
+                await commenter.bufferReviewComment(finding.path, finding.startLine, finding.endLine, finding.message, finding.evidence);
                 reviewCount += 1;
             }
             statusMsg += `\n${summarizeReviewContextStatus(contextResults)}\n`;

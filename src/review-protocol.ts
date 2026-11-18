@@ -6,6 +6,7 @@ export interface StructuredReviewComment {
   startLine: number
   endLine: number
   severity: FindingSeverity
+  evidence?: string
   message: string
 }
 
@@ -48,9 +49,11 @@ function parseJsonResponse(text: string): unknown {
 
 function addedSourceLines(diff: string): {
   texts: Map<number, string>
+  counts: Map<string, number>
   hunks: number
 } {
   const texts = new Map<number, string>()
+  const counts = new Map<string, number>()
   let cursor = 0
   let hunks = 0
   for (const source of diff.split(/\r?\n/)) {
@@ -60,13 +63,16 @@ function addedSourceLines(diff: string): {
       hunks++
     } else if (hunks > 0 && source.startsWith('+')) {
       if (texts.has(cursor)) throw new Error('Overlapping diff hunks')
-      texts.set(cursor, source.slice(1).trim())
+      const lineText = source.slice(1).trim()
+      const norm = lineText.replace(/\s+/g, ' ')
+      texts.set(cursor, lineText)
+      counts.set(norm, (counts.get(norm) ?? 0) + 1)
       cursor++
     } else if (hunks > 0 && source.startsWith(' ')) {
       cursor++
     }
   }
-  return {texts, hunks}
+  return {texts, counts, hunks}
 }
 
 function sanitizeProseSegment(text: string): string {
@@ -129,7 +135,12 @@ export function sanitizeFindingMessage(raw: string): string {
     proseStart = end
     i = end
   }
-  return out + sanitizeProseSegment(text.slice(proseStart))
+  const sanitized = out + sanitizeProseSegment(text.slice(proseStart))
+  // Neutralize spoofed dedup markers even inside backticks/fences.
+  return sanitized.replace(
+    /coderabbit:published-/gi,
+    'coderabbit\u200b:published-'
+  )
 }
 
 /**
@@ -240,10 +251,15 @@ export function processStructuredReview(
       if (sanitizedMessage.length < 8) {
         throw new Error('Invalid finding message')
       }
+      const trimmedEvidence = finding.evidence.trim()
+      const normEvidence = trimmedEvidence.replace(/\s+/g, ' ')
+      const isUniqueEvidence = (added.counts.get(normEvidence) ?? 0) <= 1
       comments.push({
         startLine: line,
         endLine: line,
         severity: finding.severity,
+        // Repeated lines fall back to exact-match dedup so distinct locations aren't collapsed.
+        ...(isUniqueEvidence ? {evidence: trimmedEvidence} : {}),
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
         }**\n\n${sanitizedMessage}`
@@ -284,15 +300,19 @@ export function selectTopFindings<
   return {selected, omitted: Math.max(0, sorted.length - selected.length)}
 }
 
+export interface RepairTokenBudget {
+  maxTokens: number
+  countTokens: (
+    // eslint-disable-next-line no-unused-vars
+    text: string
+  ) => number
+}
+
 export function buildStructuredRepairPrompt(
   reviewPrompt: string,
   previousResponse: string,
   errorMessage: string,
-  maxTokens?: number,
-  countTokens: (
-    // eslint-disable-next-line no-unused-vars
-    text: string
-  ) => number = text => Math.ceil(text.length / 4)
+  tokenBudget?: RepairTokenBudget
 ): string {
   const header = `Your previous JSON review response failed validation (${errorMessage}).
 Reply with ONLY one valid JSON object matching {"version":1,"hunks":[{"id":"h0","status":"clean"|"issues","findings":[...]}]} with exact source evidence from the diff below.`
@@ -303,12 +323,15 @@ ${previousResponse.slice(0, 4000)}
 
 Original review request (with diff):
 ${reviewPrompt}`
-  if (maxTokens !== undefined && countTokens(full) > maxTokens) {
+  if (
+    tokenBudget !== undefined &&
+    tokenBudget.countTokens(full) > tokenBudget.maxTokens
+  ) {
     const fallback = `${header}
 
 Original review request (with diff):
 ${reviewPrompt}`
-    if (countTokens(fallback) > maxTokens) {
+    if (tokenBudget.countTokens(fallback) > tokenBudget.maxTokens) {
       throw new Error('Repair prompt exceeds token budget')
     }
     return fallback
@@ -327,11 +350,7 @@ export async function runStructuredReviewWithRepair(
     prompt: string
   ) => Promise<string>,
   onRepairAttempt?: () => void,
-  maxRepairTokens?: number,
-  countTokens?: (
-    // eslint-disable-next-line no-unused-vars
-    text: string
-  ) => number
+  tokenBudget?: RepairTokenBudget
 ): Promise<StructuredReviewResult | null> {
   const response = await chat(reviewPrompt)
   if (response === '') return null
@@ -343,8 +362,7 @@ export async function runStructuredReviewWithRepair(
       reviewPrompt,
       response,
       reason,
-      maxRepairTokens,
-      countTokens
+      tokenBudget
     )
     onRepairAttempt?.()
     const repaired = await chat(repairPrompt)

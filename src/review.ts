@@ -666,6 +666,7 @@ ${
         startLine: number
         endLine: number
         severity: FindingSeverity
+        evidence?: string
         message: string
       }> = []
       const fileHunkLimit = new Map<string, number>()
@@ -825,8 +826,10 @@ ${commentChain}
                   'Structured review validation failed; attempting 1 repair retry'
                 )
               },
-              options.heavyTokenLimits.requestTokens,
-              getTokenCount
+              {
+                maxTokens: options.heavyTokenLimits.requestTokens,
+                countTokens: getTokenCount
+              }
             )
             if (structured === null) {
               info('review: nothing obtained from openai')
@@ -845,6 +848,7 @@ ${commentChain}
                 startLine: finding.startLine,
                 endLine: finding.endLine,
                 severity: finding.severity,
+                evidence: finding.evidence,
                 message: finding.message
               })
             }
@@ -928,7 +932,8 @@ ${commentChain}
           finding.path,
           finding.startLine,
           finding.endLine,
-          finding.message
+          finding.message,
+          finding.evidence
         )
         reviewCount += 1
       }

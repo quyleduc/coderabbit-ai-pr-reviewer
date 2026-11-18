@@ -195,19 +195,22 @@ ${tag}`
     startLine: number
     endLine: number
     message: string
+    evidence?: string
   }> = []
 
   async bufferReviewComment(
     path: string,
     startLine: number,
     endLine: number,
-    message: string
+    message: string,
+    evidence?: string
   ) {
     this.reviewCommentsBuffer.push({
       path,
       startLine,
       endLine,
-      message: formatReviewCommentBody(message)
+      message: formatReviewCommentBody(message),
+      evidence
     })
   }
 
