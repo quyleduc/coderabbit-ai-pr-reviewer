@@ -13,7 +13,8 @@ import {publishReviewBatch} from './review-publication'
 const context = github_context
 const repo = context.repo
 
-export const COMMENT_GREETING = `${getInput('bot_icon')}   CodeRabbit`
+const botIcon = getInput('bot_icon').trim()
+export const COMMENT_GREETING = botIcon ? `${botIcon}   Proofline` : 'Proofline'
 
 export const COMMENT_TAG =
   '<!-- This is an auto-generated comment by OSS CodeRabbit -->'
