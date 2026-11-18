@@ -6,6 +6,7 @@ export interface StructuredReviewComment {
   startLine: number
   endLine: number
   severity: FindingSeverity
+  evidence: string
   message: string
 }
 
@@ -129,7 +130,12 @@ export function sanitizeFindingMessage(raw: string): string {
     proseStart = end
     i = end
   }
-  return out + sanitizeProseSegment(text.slice(proseStart))
+  const sanitized = out + sanitizeProseSegment(text.slice(proseStart))
+  // Neutralize spoofed dedup markers even inside backticks/fences.
+  return sanitized.replace(
+    /coderabbit:published-/gi,
+    'coderabbit\u200b:published-'
+  )
 }
 
 /**
@@ -244,6 +250,7 @@ export function processStructuredReview(
         startLine: line,
         endLine: line,
         severity: finding.severity,
+        evidence: finding.evidence.trim(),
         message: `**${String(finding.severity).toUpperCase()} / ${
           finding.rule_id
         }**\n\n${sanitizedMessage}`

@@ -206,16 +206,22 @@ test('dedup runs before severity cap so 3 old high findings do not starve a new 
   )
 })
 
-test('semantic dedup suppresses reworded findings with same path, line, and rule_id while keeping distinct rules', () => {
+test('semantic dedup suppresses reworded and line-shifted findings with same rule_id + evidence, keeps OTHER_DEFECT and legacy compat', () => {
   const first = {
     path: 'src/a.c',
     startLine: 12,
     endLine: 12,
+    evidence: '  return *ptr;  ',
     message: '**HIGH / NULL_DEREF**\n\nPointer ptr may be NULL before dereference.'
   }
   const published = planReviewPublication([first], []).pending[0].message
-  const rewordedSameRule = {
+
+  // Reworded + shifted down by 2 lines (same path, rule_id, normalized evidence) -> suppressed
+  const shiftedReworded = {
     ...first,
+    startLine: 14,
+    endLine: 14,
+    evidence: 'return   *ptr;',
     message: '**HIGH / NULL_DEREF**\n\nptr could be null here and crash.'
   }
   const differentRuleSameLine = {
@@ -223,9 +229,27 @@ test('semantic dedup suppresses reworded findings with same path, line, and rule
     message: '**MEDIUM / BUFFER_OVERFLOW**\n\nIndex may exceed array bounds.'
   }
   const fresh = filterUnpublishedFindings(
-    [rewordedSameRule, differentRuleSameLine],
+    [shiftedReworded, differentRuleSameLine],
     [published]
   )
   assert.equal(fresh.length, 1)
   assert.match(fresh[0].message, /BUFFER_OVERFLOW/)
+
+  // Two distinct OTHER_DEFECT findings on same line in same run -> both kept
+  const other1 = {
+    path: 'src/a.c',
+    startLine: 20,
+    endLine: 20,
+    evidence: 'foo(bar);',
+    message: '**MEDIUM / OTHER_DEFECT**\n\nMissing check on bar.'
+  }
+  const other2 = {
+    ...other1,
+    message: '**MEDIUM / OTHER_DEFECT**\n\nReturn value of foo is ignored.'
+  }
+  assert.equal(planReviewPublication([other1, other2], []).pending.length, 2)
+
+  // Legacy comment body (only published-finding-v1 marker, no rule marker) -> still suppressed
+  const legacyBody = `${first.message}\n\n<!-- coderabbit:published-finding-v1:${publicationFingerprint(first)} -->`
+  assert.equal(filterUnpublishedFindings([first], [legacyBody]).length, 0)
 })
