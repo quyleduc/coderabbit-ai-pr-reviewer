@@ -1,9 +1,9 @@
-name: 'AI-based PR Reviewer & Summarizer with Chat Capabilities'
-description: 'AI-based PR Reviewer & Summarizer with Chat Capabilities'
+name: 'Proofline AI PR Reviewer'
+description: 'Source-validated AI pull request reviewer & summarizer with chat capabilities'
 branding:
   icon: 'git-merge'
   color: 'orange'
-author: 'CodeRabbit LLC'
+author: 'quyleduc'
 inputs:
   debug:
     required: false
@@ -263,10 +263,8 @@ inputs:
     default: 'none'
   bot_icon:
     required: false
-    description: 'The icon for the bot'
-    default:
-      '<img src="https://avatars.githubusercontent.com/in/347564?s=41"
-      alt="Image description" width="20" height="20">'
+    description: 'Optional HTML icon prefix for bot comments'
+    default: ''
 runs:
   using: 'node24'
   main: 'dist/index.js'

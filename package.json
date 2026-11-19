@@ -1,8 +1,8 @@
 {
-  "name": "openai-pr-reviewer",
+  "name": "proofline",
   "version": "0.0.0",
   "private": true,
-  "description": "Source-validated GitHub pull request reviewer with configurable LLM provider",
+  "description": "Source-validated GitHub pull request reviewer with configurable LLM provider (Proofline)",
   "main": "lib/main.js",
   "scripts": {
     "build": "cp node_modules/@dqbd/tiktoken/tiktoken_bg.wasm node_modules/web-tree-sitter/web-tree-sitter.wasm vendor/tree-sitter-c.wasm dist/ && tsc",

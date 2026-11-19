@@ -31,7 +31,7 @@ export function isTrustedCommentAuthor(association?: string | null): boolean {
 // eslint-disable-next-line camelcase
 const context = github_context
 const repo = context.repo
-const ASK_BOT = '@coderabbitai'
+const ASK_BOT = '@proofline'
 
 export const handleReviewComment = async (
   heavyBot: Bot,
