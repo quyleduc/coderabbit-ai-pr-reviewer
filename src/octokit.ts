@@ -32,7 +32,12 @@ Retry count: ${retryCount}
         return true
       }
     },
-    onSecondaryRateLimit: (retryAfter: number, options: any) => {
+    onSecondaryRateLimit: (
+      retryAfter: number,
+      options: any,
+      _o: any,
+      retryCount: number
+    ) => {
       warning(
         `SecondaryRateLimit detected for request ${options.method} ${options.url} ; retry after ${retryAfter} seconds`
       )
@@ -43,7 +48,19 @@ Retry count: ${retryCount}
       ) {
         return false
       }
-      return true
+      return retryCount <= 3
     }
+  }
+})
+
+// Never auto-replay non-idempotent PR review creation/submission on 5xx responses.
+octokit.hook.before('request', options => {
+  if (
+    options.method === 'POST' &&
+    /\/repos\/[^/]+\/[^/]+\/pulls\/(?:\d+|\{pull_number\})\/reviews(?:\/|$)/.test(
+      options.url ?? ''
+    )
+  ) {
+    options.request = {...options.request, retries: 0}
   }
 })

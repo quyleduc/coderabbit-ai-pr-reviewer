@@ -65,43 +65,29 @@ export class Inputs {
     if (!content) {
       return ''
     }
-    if (this.systemMessage) {
-      content = content.replaceAll('$system_message', () => this.systemMessage)
-    }
-    if (this.title) {
-      content = content.replaceAll('$title', () => this.title)
-    }
-    if (this.description) {
-      content = content.replaceAll('$description', () => this.description)
-    }
-    if (this.rawSummary) {
-      content = content.replaceAll('$raw_summary', () => this.rawSummary)
-    }
-    if (this.shortSummary) {
-      content = content.replaceAll('$short_summary', () => this.shortSummary)
-    }
-    if (this.filename) {
-      content = content.replaceAll('$filename', () => this.filename)
-    }
-    if (this.fileContent) {
-      content = content.replaceAll('$file_content', () => this.fileContent)
-    }
-    if (this.fileDiff) {
-      content = content.replaceAll('$file_diff', () => this.fileDiff)
-    }
-    if (this.patches) {
-      content = content.replaceAll('$patches', () => this.patches)
-    }
-    if (this.diff) {
-      content = content.replaceAll('$diff', () => this.diff)
-    }
-    if (this.commentChain) {
-      content = content.replaceAll('$comment_chain', () => this.commentChain)
-    }
-    if (this.comment) {
-      content = content.replaceAll('$comment', () => this.comment)
-    }
-    content = content.replaceAll('$review_context', () => this.reviewContext)
-    return content
+    const values = new Map<string, string>([
+      ['system_message', this.systemMessage],
+      ['title', this.title],
+      ['description', this.description],
+      ['raw_summary', this.rawSummary],
+      ['short_summary', this.shortSummary],
+      ['filename', this.filename],
+      ['file_content', this.fileContent],
+      ['file_diff', this.fileDiff],
+      ['patches', this.patches],
+      ['diff', this.diff],
+      ['comment_chain', this.commentChain],
+      ['comment', this.comment],
+      ['review_context', this.reviewContext]
+    ])
+    // Single-pass replacement prevents untrusted/diff values from expanding later placeholders.
+    return content.replace(
+      /\$(system_message|title|description|raw_summary|short_summary|filename|file_content|file_diff|patches|diff|comment_chain|comment|review_context)\b/g,
+      (match, key: string) => {
+        const val = values.get(key)
+        if (val) return val
+        return key === 'review_context' ? '' : match
+      }
+    )
   }
 }

@@ -985,7 +985,7 @@ ${tag}`;
     removeContentWithinTags(content, startTag, endTag) {
         const start = content.indexOf(startTag);
         const end = content.lastIndexOf(endTag);
-        if (start >= 0 && end >= 0) {
+        if (start >= 0 && end >= start + startTag.length) {
             return content.slice(0, start) + content.slice(end + endTag.length);
         }
         return content;
@@ -1271,8 +1271,8 @@ ${chain}
     async composeCommentChain(reviewComments, topLevelComment) {
         const conversationChain = reviewComments
             .filter((cmt) => cmt.in_reply_to_id === topLevelComment.id)
-            .map((cmt) => `${cmt.user.login}: ${cmt.body}`);
-        conversationChain.unshift(`${topLevelComment.user.login}: ${topLevelComment.body}`);
+            .map((cmt) => `${cmt.user?.login ?? 'deleted-user'}: ${cmt.body}`);
+        conversationChain.unshift(`${topLevelComment.user?.login ?? 'deleted-user'}: ${topLevelComment.body}`);
         return conversationChain.join('\n---\n');
     }
     async getCommentChain(pullNumber, comment) {
@@ -1369,6 +1369,7 @@ ${chain}
                     comment_id: cmt.id,
                     body
                 });
+                cmt.body = body;
             }
             else {
                 await this.create(body, target);
@@ -1430,7 +1431,9 @@ ${chain}
     getReviewedCommitIds(commentBody) {
         const start = commentBody.indexOf(COMMIT_ID_START_TAG);
         const end = commentBody.indexOf(COMMIT_ID_END_TAG);
-        if (start === -1 || end === -1) {
+        if (start === -1 ||
+            end === -1 ||
+            end < start + COMMIT_ID_START_TAG.length) {
             return [];
         }
         const ids = commentBody.substring(start + COMMIT_ID_START_TAG.length, end);
@@ -1808,44 +1811,28 @@ class Inputs {
         if (!content) {
             return '';
         }
-        if (this.systemMessage) {
-            content = content.replaceAll('$system_message', () => this.systemMessage);
-        }
-        if (this.title) {
-            content = content.replaceAll('$title', () => this.title);
-        }
-        if (this.description) {
-            content = content.replaceAll('$description', () => this.description);
-        }
-        if (this.rawSummary) {
-            content = content.replaceAll('$raw_summary', () => this.rawSummary);
-        }
-        if (this.shortSummary) {
-            content = content.replaceAll('$short_summary', () => this.shortSummary);
-        }
-        if (this.filename) {
-            content = content.replaceAll('$filename', () => this.filename);
-        }
-        if (this.fileContent) {
-            content = content.replaceAll('$file_content', () => this.fileContent);
-        }
-        if (this.fileDiff) {
-            content = content.replaceAll('$file_diff', () => this.fileDiff);
-        }
-        if (this.patches) {
-            content = content.replaceAll('$patches', () => this.patches);
-        }
-        if (this.diff) {
-            content = content.replaceAll('$diff', () => this.diff);
-        }
-        if (this.commentChain) {
-            content = content.replaceAll('$comment_chain', () => this.commentChain);
-        }
-        if (this.comment) {
-            content = content.replaceAll('$comment', () => this.comment);
-        }
-        content = content.replaceAll('$review_context', () => this.reviewContext);
-        return content;
+        const values = new Map([
+            ['system_message', this.systemMessage],
+            ['title', this.title],
+            ['description', this.description],
+            ['raw_summary', this.rawSummary],
+            ['short_summary', this.shortSummary],
+            ['filename', this.filename],
+            ['file_content', this.fileContent],
+            ['file_diff', this.fileDiff],
+            ['patches', this.patches],
+            ['diff', this.diff],
+            ['comment_chain', this.commentChain],
+            ['comment', this.comment],
+            ['review_context', this.reviewContext]
+        ]);
+        // Single-pass replacement prevents untrusted/diff values from expanding later placeholders.
+        return content.replace(/\$(system_message|title|description|raw_summary|short_summary|filename|file_content|file_diff|patches|diff|comment_chain|comment|review_context)\b/g, (match, key) => {
+            const val = values.get(key);
+            if (val)
+                return val;
+            return key === 'review_context' ? '' : match;
+        });
     }
 }
 
@@ -2406,15 +2393,22 @@ Retry count: ${retryCount}
                 return true;
             }
         },
-        onSecondaryRateLimit: (retryAfter, options) => {
+        onSecondaryRateLimit: (retryAfter, options, _o, retryCount) => {
             (0,core.warning)(`SecondaryRateLimit detected for request ${options.method} ${options.url} ; retry after ${retryAfter} seconds`);
             // if we are doing a POST method on /repos/{owner}/{repo}/pulls/{pull_number}/reviews then we shouldn't retry
             if (options.method === 'POST' &&
                 options.url.match(/\/repos\/.*\/.*\/pulls\/.*\/reviews/)) {
                 return false;
             }
-            return true;
+            return retryCount <= 3;
         }
+    }
+});
+// Never auto-replay non-idempotent PR review creation/submission on 5xx responses.
+octokit.hook.before('request', options => {
+    if (options.method === 'POST' &&
+        /\/repos\/[^/]+\/[^/]+\/pulls\/(?:\d+|\{pull_number\})\/reviews(?:\/|$)/.test(options.url ?? '')) {
+        options.request = { ...options.request, retries: 0 };
     }
 });
 
@@ -6172,7 +6166,10 @@ function canonicalizeRuleId(value) {
     if (Object.prototype.hasOwnProperty.call(REVIEW_RULES, value)) {
         return value;
     }
-    return ruleAliases[value] ?? 'NON_CANONICAL';
+    if (Object.prototype.hasOwnProperty.call(ruleAliases, value)) {
+        return ruleAliases[value];
+    }
+    return 'NON_CANONICAL';
 }
 function renderReviewRuleCatalog() {
     return Object.entries(REVIEW_RULES)
@@ -86963,7 +86960,7 @@ module.exports["default"] = module.exports;
 const tokenizer = (0,_dqbd_tiktoken__WEBPACK_IMPORTED_MODULE_0__/* .get_encoding */ .TR)('cl100k_base');
 /** @param {string} input @returns {Uint32Array} */
 function encode(input) {
-    return tokenizer.encode(input);
+    return tokenizer.encode(input, undefined, []);
 }
 /** @param {string} input @returns {number} */
 function getTokenCount(input) {

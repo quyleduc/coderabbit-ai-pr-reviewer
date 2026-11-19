@@ -115,7 +115,7 @@ ${tag}`
   removeContentWithinTags(content: string, startTag: string, endTag: string) {
     const start = content.indexOf(startTag)
     const end = content.lastIndexOf(endTag)
-    if (start >= 0 && end >= 0) {
+    if (start >= 0 && end >= start + startTag.length) {
       return content.slice(0, start) + content.slice(end + endTag.length)
     }
     return content
@@ -513,10 +513,12 @@ ${chain}
   async composeCommentChain(reviewComments: any[], topLevelComment: any) {
     const conversationChain = reviewComments
       .filter((cmt: any) => cmt.in_reply_to_id === topLevelComment.id)
-      .map((cmt: any) => `${cmt.user.login}: ${cmt.body}`)
+      .map((cmt: any) => `${cmt.user?.login ?? 'deleted-user'}: ${cmt.body}`)
 
     conversationChain.unshift(
-      `${topLevelComment.user.login}: ${topLevelComment.body}`
+      `${topLevelComment.user?.login ?? 'deleted-user'}: ${
+        topLevelComment.body
+      }`
     )
 
     return conversationChain.join('\n---\n')
@@ -629,6 +631,7 @@ ${chain}
           comment_id: cmt.id,
           body
         })
+        cmt.body = body
       } else {
         await this.create(body, target)
       }
@@ -692,7 +695,11 @@ ${chain}
   getReviewedCommitIds(commentBody: string): string[] {
     const start = commentBody.indexOf(COMMIT_ID_START_TAG)
     const end = commentBody.indexOf(COMMIT_ID_END_TAG)
-    if (start === -1 || end === -1) {
+    if (
+      start === -1 ||
+      end === -1 ||
+      end < start + COMMIT_ID_START_TAG.length
+    ) {
       return []
     }
     const ids = commentBody.substring(start + COMMIT_ID_START_TAG.length, end)

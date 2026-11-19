@@ -46,7 +46,10 @@ export function canonicalizeRuleId(
   if (Object.prototype.hasOwnProperty.call(REVIEW_RULES, value)) {
     return value as ReviewRuleId
   }
-  return ruleAliases[value] ?? 'NON_CANONICAL'
+  if (Object.prototype.hasOwnProperty.call(ruleAliases, value)) {
+    return ruleAliases[value]
+  }
+  return 'NON_CANONICAL'
 }
 
 export function renderReviewRuleCatalog(): string {
