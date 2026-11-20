@@ -723,3 +723,108 @@ test('isTrustedCommentAuthor only allows OWNER, MEMBER, and COLLABORATOR', async
   assert.equal(isTrustedCommentAuthor('NONE'), false)
   assert.equal(isTrustedCommentAuthor(undefined), false)
 })
+
+test('Inputs.render performs single-pass substitution without re-expanding placeholders', async () => {
+  const {Inputs} = await import('../src/inputs.ts')
+  const inputs = new Inputs()
+  inputs.description = 'PR mentions $patches and $review_context'
+  inputs.patches = '@@ -1 +1 @@\n+const x = "$review_context";'
+  inputs.reviewContext = 'CONTEXT_JSON'
+  const out = inputs.render('$description\n$patches\n$review_context')
+  assert.equal(
+    out,
+    'PR mentions $patches and $review_context\n@@ -1 +1 @@\n+const x = "$review_context";\nCONTEXT_JSON'
+  )
+})
+
+test('getTokenCount handles cl100k_base special tokens without throwing', async () => {
+  const {getTokenCount} = await import('../src/tokenizer-core.mjs')
+  for (const tok of [
+    '<|endoftext|>',
+    '<|fim_prefix|>',
+    '<|fim_middle|>',
+    '<|fim_suffix|>',
+    '<|endofprompt|>'
+  ]) {
+    assert.ok(getTokenCount(`code ${tok} more`) >= 2)
+  }
+})
+
+test('canonicalizeRuleId does not leak Object.prototype properties', async () => {
+  const {canonicalizeRuleId} = await import('../src/rule-catalog.ts')
+  assert.equal(canonicalizeRuleId('toString'), 'NON_CANONICAL')
+  assert.equal(canonicalizeRuleId('constructor'), 'NON_CANONICAL')
+  assert.equal(canonicalizeRuleId('__proto__'), 'NON_CANONICAL')
+  assert.equal(canonicalizeRuleId('NULL_POINTER'), 'NULL_DEREF')
+})
+
+test('Commenter.replace updates cache, composeCommentChain handles deleted user, and inverted tags are safe', async () => {
+  const {octokit} = await import('../src/octokit.ts')
+  const {Commenter, COMMIT_ID_START_TAG, COMMIT_ID_END_TAG} = await import(
+    '../src/commenter.ts'
+  )
+  const commenter = new Commenter('github-actions[bot]')
+
+  // Inverted tags
+  assert.equal(
+    commenter.removeContentWithinTags(
+      'a <!-- end --> b <!-- start --> c',
+      '<!-- start -->',
+      '<!-- end -->'
+    ),
+    'a <!-- end --> b <!-- start --> c'
+  )
+  assert.deepEqual(
+    commenter.getReviewedCommitIds(
+      `${COMMIT_ID_END_TAG}<!-- abc -->${COMMIT_ID_START_TAG}`
+    ),
+    []
+  )
+
+  // Deleted user in composeCommentChain
+  const chain = await commenter.composeCommentChain(
+    [{id: 2, in_reply_to_id: 1, user: null, body: 'reply'}],
+    {id: 1, user: null, body: 'root'}
+  )
+  assert.equal(chain, 'deleted-user: root\n---\ndeleted-user: reply')
+
+  // replace() updates issueCommentsCache
+  const origList = octokit.issues.listComments
+  const origUpdate = octokit.issues.updateComment
+  try {
+    const tag = '<!-- summary-tag -->'
+    octokit.issues.listComments = async () => ({
+      data: [{id: 10, user: {login: 'github-actions[bot]'}, body: `v1 ${tag}`}]
+    })
+    octokit.issues.updateComment = async () => ({data: {}})
+    await commenter.replace(`v2 ${tag}`, tag, 99)
+    const found = await commenter.findCommentWithTag(tag, 99)
+    assert.equal(found?.body, `v2 ${tag}`)
+  } finally {
+    octokit.issues.listComments = origList
+    octokit.issues.updateComment = origUpdate
+  }
+})
+
+test('octokit disables 5xx retries for POST .../reviews', async () => {
+  const {octokit} = await import('../src/octokit.ts')
+  let attempts = 0
+  await assert.rejects(
+    octokit.pulls.createReview({
+      owner: 'o',
+      repo: 'r',
+      pull_number: 1,
+      event: 'COMMENT',
+      request: {
+        fetch: async () => {
+          attempts++
+          return new Response(JSON.stringify({message: 'bad gateway'}), {
+            status: 502,
+            headers: {'content-type': 'application/json'}
+          })
+        }
+      }
+    })
+  )
+  assert.equal(attempts, 1)
+})

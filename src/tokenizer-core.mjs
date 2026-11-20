@@ -4,7 +4,7 @@ const tokenizer = get_encoding('cl100k_base')
 
 /** @param {string} input @returns {Uint32Array} */
 export function encode(input) {
-  return tokenizer.encode(input)
+  return tokenizer.encode(input, undefined, [])
 }
 
 /** @param {string} input @returns {number} */
