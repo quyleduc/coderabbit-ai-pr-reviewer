@@ -129,3 +129,60 @@ test('vendored wasm matches pinned checksum', () => {
   const digest = createHash('sha256').update(readFileSync(WASM)).digest('hex')
   assert.equal(digest, 'c852c2a85ebf2beb636aa3b0ef7f7e70458684d74f6741b20dcb296885bed9f9')
 })
+
+test('resolves multi-relation symbols (EXPANDS_MACRO, ALIASES, READS, WRITES, CALLS) across PlatformIO layout and 2-hop headers', async () => {
+  const pioFiles = {
+    'firmware/src/worker.cpp': `#include "worker.h"
+void tick(cfg_t *cfg) {
+  g_ticks += STEP_INC;
+  int mode = MODE_ACTIVE;
+  int clamped = CLAMP(mode, STEP_INC);
+  hal_apply(cfg, clamped);
+}
+`,
+    'firmware/include/worker.h': `#include "hal_types.h"
+#define STEP_INC 4
+#define CLAMP(x, hi) ((x) > (hi) ? (hi) : (x))
+extern int g_ticks;
+void hal_apply(cfg_t *cfg, int v);
+`,
+    'firmware/include/hal_types.h': `typedef struct { int limit; } cfg_t;
+enum worker_mode { MODE_IDLE = 0, MODE_ACTIVE = 1 };
+`,
+    'firmware/src/worker.c': `#include "worker.h"
+int g_ticks = 0;
+void hal_apply(cfg_t *cfg, int v) {
+  if (cfg) cfg->limit = v;
+}
+`
+  }
+  const provider = createAstContextProvider({
+    parser,
+    fetchFile: async path => {
+      const text = pioFiles[path]
+      return text === undefined ? null : {blobSha: sha(text), text}
+    },
+    maxFetches: 8
+  })
+  const res = await retrieveReviewContext(
+    provider,
+    request({
+      changedFile: 'firmware/src/worker.cpp',
+      hunks: [{startLine: 2, endLine: 7, patch: '@@ -2,0 +2,6 @@'}]
+    })
+  )
+  assert.equal(res.status, 'available')
+  const byKey = Object.fromEntries(
+    res.snippets.map(s => [`${s.relation}:${s.symbolId}@${s.path}`, s])
+  )
+  assert.ok(byKey['CALLS:c:function:hal_apply@firmware/src/worker.c'])
+  assert.ok(byKey['WRITES:c:variable:g_ticks@firmware/src/worker.c'])
+  assert.ok(byKey['EXPANDS_MACRO:c:macro:STEP_INC@firmware/include/worker.h'])
+  assert.ok(byKey['EXPANDS_MACRO:c:macro:CLAMP@firmware/include/worker.h'])
+  assert.ok(byKey['ALIASES:c:type:cfg_t@firmware/include/hal_types.h'])
+  assert.equal(
+    byKey['ALIASES:c:type:cfg_t@firmware/include/hal_types.h'].graphDistance,
+    2
+  )
+  assert.ok(byKey['READS:c:enum:MODE_ACTIVE@firmware/include/hal_types.h'])
+})

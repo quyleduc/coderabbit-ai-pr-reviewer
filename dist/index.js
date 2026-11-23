@@ -1545,7 +1545,7 @@ __nccwpck_require__.d(__webpack_exports__, {
   Hx: () => (/* binding */ loadCParser)
 });
 
-// UNUSED EXPORTS: C_CONTEXT_VARIANT_ID, MAX_CONTEXT_FILE_BYTES
+// UNUSED EXPORTS: C_CONTEXT_VARIANT_ID, MAX_CONTEXT_FILE_BYTES, collectHunkReferences, collectSymbols
 
 ;// CONCATENATED MODULE: external "node:fs"
 const external_node_fs_namespaceObject = require("node:fs");
@@ -1563,6 +1563,7 @@ const C_CONTEXT_VARIANT_ID = 'tree-sitter-c-0.24.1';
 const MAX_CONTEXT_FILE_BYTES = 256 * 1024;
 const MAX_EXCERPT_LINES = 40;
 const DEFAULT_MAX_FETCHES = 6;
+const C_FAMILY_FILE = /\.(?:[ch](?:pp|xx|c)?|cc)$/i;
 /** GitHub blob reader at a pinned ref; never checks out or executes PR code. */
 function createGithubFileFetcher(octokit, owner, repo) {
     return async (path, ref, signal) => {
@@ -1610,43 +1611,204 @@ const CONTAINERS = new Set([
     'linkage_specification',
     'declaration_list'
 ]);
-function declaredName(node) {
+function declaredFunctionName(node) {
     const fn = node.descendantsOfType('function_declarator')[0];
     const id = fn?.childForFieldName('declarator');
     return id?.type === 'identifier' ? id.text : null;
 }
-/** Top-level function definitions and prototypes; never descends into bodies. */
+function declaredVariableNames(node) {
+    const names = [];
+    for (const child of node.namedChildren) {
+        if (child.type === 'type_Descriptor' ||
+            child.type === 'struct_specifier' ||
+            child.type === 'enum_specifier' ||
+            child.type === 'union_specifier' ||
+            child.type === 'primitive_type' ||
+            child.type === 'type_identifier' ||
+            child.type === 'sized_type_specifier' ||
+            child.type === 'storage_class_specifier' ||
+            child.type === 'type_qualifier') {
+            continue;
+        }
+        if (child.type === 'identifier') {
+            names.push(child.text);
+        }
+        else {
+            const id = child.descendantsOfType('identifier')[0];
+            if (id)
+                names.push(id.text);
+        }
+    }
+    return names;
+}
+function collectEnumConstants(node, out) {
+    const startLine = node.startPosition.row + 1;
+    const endLine = node.endPosition.row + 1;
+    for (const enumerator of node.descendantsOfType('enumerator')) {
+        const nameNode = enumerator.childForFieldName('name') ??
+            enumerator.descendantsOfType('identifier')[0];
+        if (nameNode?.type === 'identifier') {
+            out.push({
+                kind: 'enum_const',
+                name: nameNode.text,
+                startLine,
+                endLine,
+                hasBody: true
+            });
+        }
+    }
+}
+/**
+ * Extracts top-level definitions and declarations (Aider / Universal Ctags style):
+ * functions, object/function macros, typedefs, structs/enums/unions, enum constants,
+ * and top-level global/extern variables. Never descends into function bodies.
+ */
 function collectSymbols(node, out = []) {
     for (const child of node.namedChildren) {
+        const startLine = child.startPosition.row + 1;
+        const endLine = child.endPosition.row + 1;
         if (CONTAINERS.has(child.type)) {
             collectSymbols(child, out);
         }
         else if (child.type === 'function_definition' ||
             child.type === 'declaration') {
-            const name = declaredName(child);
-            if (name !== null) {
+            const fnName = declaredFunctionName(child);
+            if (fnName !== null) {
                 out.push({
-                    name,
-                    startLine: child.startPosition.row + 1,
-                    endLine: child.endPosition.row + 1,
+                    kind: 'function',
+                    name: fnName,
+                    startLine,
+                    endLine,
                     hasBody: child.type === 'function_definition'
                 });
+                continue;
+            }
+            if (child.type === 'declaration') {
+                const isExtern = child.children.some(c => c.type === 'storage_class_specifier' && c.text === 'extern');
+                for (const varName of declaredVariableNames(child)) {
+                    out.push({
+                        kind: 'variable',
+                        name: varName,
+                        startLine,
+                        endLine,
+                        hasBody: !isExtern
+                    });
+                }
+            }
+        }
+        else if (child.type === 'preproc_def' ||
+            child.type === 'preproc_function_def') {
+            const nameNode = child.childForFieldName('name') ??
+                child.descendantsOfType('identifier')[0];
+            if (nameNode?.type === 'identifier') {
+                out.push({
+                    kind: 'macro',
+                    name: nameNode.text,
+                    startLine,
+                    endLine,
+                    hasBody: true
+                });
+            }
+        }
+        else if (child.type === 'type_definition') {
+            const typeIds = child.descendantsOfType('type_identifier');
+            const aliasNode = typeIds.at(-1);
+            if (aliasNode) {
+                out.push({
+                    kind: 'typedef',
+                    name: aliasNode.text,
+                    startLine,
+                    endLine,
+                    hasBody: true
+                });
+            }
+            for (const enumNode of child.descendantsOfType('enum_specifier')) {
+                collectEnumConstants(enumNode, out);
+            }
+        }
+        else if (child.type === 'struct_specifier' ||
+            child.type === 'union_specifier' ||
+            child.type === 'enum_specifier') {
+            const nameNode = child.childForFieldName('name') ??
+                child.descendantsOfType('type_identifier')[0];
+            const hasFields = child.descendantsOfType('field_declaration_list').length > 0 ||
+                child.descendantsOfType('enumerator_list').length > 0;
+            if (nameNode && hasFields) {
+                out.push({
+                    kind: 'type',
+                    name: nameNode.text,
+                    startLine,
+                    endLine,
+                    hasBody: true
+                });
+            }
+            if (child.type === 'enum_specifier' && hasFields) {
+                collectEnumConstants(child, out);
             }
         }
     }
     return out;
 }
-function calledNamesInHunks(root, hunks) {
-    const names = new Set();
+function inHunks(line, hunks) {
+    return hunks.some(h => line >= h.startLine && line <= h.endLine);
+}
+function rootModifiedIdentifier(target) {
+    let cur = target;
+    while (cur) {
+        if (cur.type === 'identifier')
+            return cur.text;
+        if (cur.type === 'field_expression' ||
+            cur.type === 'subscript_expression' ||
+            cur.type === 'pointer_expression' ||
+            cur.type === 'parenthesized_expression') {
+            cur = cur.namedChildren[0] ?? null;
+            continue;
+        }
+        break;
+    }
+    return null;
+}
+/** Collects multi-relation references inside changed hunks (SCIP / Aider style). */
+function collectHunkReferences(root, hunks) {
+    const calls = new Set();
+    const writes = new Set();
+    const types = new Set();
+    const reads = new Set();
     for (const call of root.descendantsOfType('call_expression')) {
         const fn = call.childForFieldName('function');
         const line = call.startPosition.row + 1;
-        if (fn?.type === 'identifier' &&
-            hunks.some(h => line >= h.startLine && line <= h.endLine)) {
-            names.add(fn.text);
+        if (fn?.type === 'identifier' && inHunks(line, hunks)) {
+            calls.add(fn.text);
         }
     }
-    return names;
+    for (const assign of root.descendantsOfType('assignment_expression')) {
+        const line = assign.startPosition.row + 1;
+        if (inHunks(line, hunks)) {
+            const id = rootModifiedIdentifier(assign.childForFieldName('left'));
+            if (id)
+                writes.add(id);
+        }
+    }
+    for (const update of root.descendantsOfType('update_expression')) {
+        const line = update.startPosition.row + 1;
+        if (inHunks(line, hunks)) {
+            const id = rootModifiedIdentifier(update.childForFieldName('argument'));
+            if (id)
+                writes.add(id);
+        }
+    }
+    for (const tid of root.descendantsOfType('type_identifier')) {
+        const line = tid.startPosition.row + 1;
+        if (inHunks(line, hunks))
+            types.add(tid.text);
+    }
+    for (const id of root.descendantsOfType('identifier')) {
+        const line = id.startPosition.row + 1;
+        if (inHunks(line, hunks) && !calls.has(id.text)) {
+            reads.add(id.text);
+        }
+    }
+    return { calls, writes, types, reads };
 }
 function quotedIncludes(root) {
     const paths = [];
@@ -1661,6 +1823,38 @@ function safeJoin(dir, rel) {
     const joined = external_node_path_.posix.normalize(dir === '' ? rel : `${dir}/${rel}`);
     return joined.startsWith('..') || joined.startsWith('/') ? null : joined;
 }
+function headerSearchBases(changedFile) {
+    const dir = external_node_path_.posix.dirname(changedFile).replace(/^\.$/, '');
+    const parent = external_node_path_.posix.dirname(dir).replace(/^\.$/, '');
+    const bases = [dir];
+    const siblingInclude = safeJoin(parent, 'include');
+    if (siblingInclude && !bases.includes(siblingInclude)) {
+        bases.push(siblingInclude);
+    }
+    if (!bases.includes('include'))
+        bases.push('include');
+    return bases;
+}
+function siblingSourceCandidates(headerPath) {
+    const dir = external_node_path_.posix.dirname(headerPath).replace(/^\.$/, '');
+    const stem = external_node_path_.posix.basename(headerPath).replace(/\.[ch](?:pp|xx)?$/i, '');
+    const out = [];
+    const dirs = [dir];
+    if (external_node_path_.posix.basename(dir) === 'include') {
+        const parent = external_node_path_.posix.dirname(dir).replace(/^\.$/, '');
+        const siblingSrc = safeJoin(parent, 'src');
+        if (siblingSrc)
+            dirs.push(siblingSrc);
+    }
+    for (const d of dirs) {
+        for (const ext of ['.c', '.cpp']) {
+            const p = safeJoin(d, `${stem}${ext}`);
+            if (p && !out.includes(p))
+                out.push(p);
+        }
+    }
+    return out;
+}
 function excerptOf(text, startLine, endLine) {
     const lines = text.split(/\r\n|\r|\n/);
     const end = Math.min(endLine, startLine + MAX_EXCERPT_LINES - 1, lines.length);
@@ -1669,10 +1863,90 @@ function excerptOf(text, startLine, endLine) {
 // Mirrors the validator in review-context.ts: one bad candidate would discard all context.
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN_EXCERPT = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/;
+function matchSymbolRelation(sym, refs) {
+    if (sym.kind === 'function' && refs.calls.has(sym.name)) {
+        return {
+            relation: 'CALLS',
+            symbolId: `c:function:${sym.name}`,
+            satisfied: sym.hasBody
+        };
+    }
+    if (sym.kind === 'macro' &&
+        (refs.calls.has(sym.name) || refs.reads.has(sym.name))) {
+        return {
+            relation: 'EXPANDS_MACRO',
+            symbolId: `c:macro:${sym.name}`,
+            satisfied: true
+        };
+    }
+    if (sym.kind === 'typedef' && refs.types.has(sym.name)) {
+        return {
+            relation: 'ALIASES',
+            symbolId: `c:type:${sym.name}`,
+            satisfied: true
+        };
+    }
+    if (sym.kind === 'type' &&
+        (refs.types.has(sym.name) || refs.reads.has(sym.name))) {
+        return {
+            relation: 'READS',
+            symbolId: `c:type:${sym.name}`,
+            satisfied: true
+        };
+    }
+    if (sym.kind === 'enum_const' && refs.reads.has(sym.name)) {
+        return {
+            relation: 'READS',
+            symbolId: `c:enum:${sym.name}`,
+            satisfied: true
+        };
+    }
+    if (sym.kind === 'variable') {
+        if (refs.writes.has(sym.name)) {
+            return {
+                relation: 'WRITES',
+                symbolId: `c:variable:${sym.name}`,
+                satisfied: sym.hasBody
+            };
+        }
+        if (refs.reads.has(sym.name)) {
+            return {
+                relation: 'READS',
+                symbolId: `c:variable:${sym.name}`,
+                satisfied: sym.hasBody
+            };
+        }
+    }
+    return null;
+}
+function hasRemainingWork(refs) {
+    return (refs.calls.size > 0 ||
+        refs.writes.size > 0 ||
+        refs.types.size > 0 ||
+        refs.reads.size > 0);
+}
+function markSatisfied(sym, refs) {
+    if (sym.kind === 'function' || sym.kind === 'macro') {
+        refs.calls.delete(sym.name);
+        refs.reads.delete(sym.name);
+    }
+    else if (sym.kind === 'typedef' || sym.kind === 'type') {
+        refs.types.delete(sym.name);
+    }
+    else if (sym.kind === 'enum_const') {
+        refs.reads.delete(sym.name);
+    }
+    else if (sym.kind === 'variable') {
+        refs.writes.delete(sym.name);
+        refs.reads.delete(sym.name);
+    }
+}
 /**
- * Builds C CALLS context: for calls inside changed hunks, finds the callee's
- * definition in the same file, or its declaration/definition via quoted
- * includes and the matching sibling .c file. Instances are per-PR (caches by path).
+ * Multi-relation C/C++ AST context engine (inspired by Aider repo-map,
+ * Sourcegraph SCIP relations, and clangd header/source heuristics):
+ * resolves CALLS, READS, WRITES, EXPANDS_MACRO, INCLUDES, and ALIASES across
+ * same-file, quoted includes (including PlatformIO/ESP-IDF sibling include/src
+ * layouts), sibling implementation files, and 2-hop transitive headers.
  */
 function createAstContextProvider(options) {
     const maxFetches = options.maxFetches ?? DEFAULT_MAX_FETCHES;
@@ -1681,7 +1955,7 @@ function createAstContextProvider(options) {
     return {
         variantId: C_CONTEXT_VARIANT_ID,
         async collectCandidates(request, signal, maxCandidates) {
-            if (!/\.[ch]$/.test(request.changedFile))
+            if (!C_FAMILY_FILE.test(request.changedFile))
                 return [];
             const get = (path) => {
                 let hit = cache.get(path);
@@ -1700,63 +1974,105 @@ function createAstContextProvider(options) {
             const tree = options.parser.parse(self.text);
             if (tree === null)
                 return [];
-            const needed = calledNamesInHunks(tree.rootNode, request.hunks);
-            if (needed.size === 0)
+            const refs = collectHunkReferences(tree.rootNode, request.hunks);
+            if (!hasRemainingWork(refs))
                 return [];
             const out = [];
-            const add = (path, file, sym, distance) => {
-                const { end, excerpt } = excerptOf(file.text, sym.startLine, sym.endLine);
+            const addCandidate = (path, file, startLine, endLine, symbolId, relation, hasBody, distance, provenanceSuffix) => {
+                const { end, excerpt } = excerptOf(file.text, startLine, endLine);
                 if (excerpt === '' || FORBIDDEN_EXCERPT.test(excerpt))
                     return;
                 out.push({
                     headSha: request.headSha,
                     blobSha: file.blobSha,
                     path,
-                    startLine: sym.startLine,
+                    startLine,
                     endLine: end,
-                    symbolId: `c:function:${sym.name}`,
-                    relation: 'CALLS',
+                    symbolId,
+                    relation,
                     variantId: C_CONTEXT_VARIANT_ID,
-                    // A prototype alone does not prove the implementation.
-                    status: sym.hasBody ? 'SUPPORTED' : 'PARTIAL',
+                    status: hasBody ? 'SUPPORTED' : 'PARTIAL',
                     graphDistance: distance,
-                    provenance: `${C_CONTEXT_VARIANT_ID}:call-to-${sym.hasBody ? 'definition' : 'declaration'}`,
+                    provenance: `${C_CONTEXT_VARIANT_ID}:${provenanceSuffix}`,
                     excerpt
                 });
-                if (sym.hasBody)
-                    needed.delete(sym.name);
             };
-            const resolveIn = (path, file, distance, wantBody) => {
+            const resolveIn = (path, file, distance, wantBodyOnly) => {
                 const t = options.parser.parse(file.text);
                 if (t === null)
-                    return;
+                    return null;
                 for (const sym of collectSymbols(t.rootNode)) {
-                    if (needed.has(sym.name) && (sym.hasBody || !wantBody)) {
-                        add(path, file, sym, distance);
+                    if (wantBodyOnly && !sym.hasBody)
+                        continue;
+                    // Avoid echoing a definition whose entire span already sits inside a changed hunk of the same file.
+                    if (distance === 0 &&
+                        request.hunks.some(h => sym.startLine >= h.startLine && sym.endLine <= h.endLine)) {
+                        continue;
                     }
+                    const matched = matchSymbolRelation(sym, refs);
+                    if (!matched)
+                        continue;
+                    addCandidate(path, file, sym.startLine, sym.endLine, matched.symbolId, matched.relation, sym.hasBody, distance, `${matched.relation.toLowerCase()}-${sym.hasBody ? 'definition' : 'declaration'}`);
+                    if (matched.satisfied)
+                        markSatisfied(sym, refs);
                 }
+                return t.rootNode;
             };
             resolveIn(request.changedFile, self, 0, true);
-            const dir = external_node_path_.posix.dirname(request.changedFile).replace(/^\.$/, '');
+            const bases = headerSearchBases(request.changedFile);
+            const visitedHeaders = new Set();
+            const secondHopQueue = [];
             for (const inc of quotedIncludes(tree.rootNode)) {
-                if (needed.size === 0 || signal.aborted || out.length >= maxCandidates)
+                if (!hasRemainingWork(refs) ||
+                    signal.aborted ||
+                    out.length >= maxCandidates)
                     break;
-                for (const base of [dir, 'include']) {
+                for (const base of bases) {
                     const headerPath = safeJoin(base, inc);
-                    if (headerPath === null)
+                    if (headerPath === null || visitedHeaders.has(headerPath))
                         continue;
                     const header = await get(headerPath);
                     if (header === null)
                         continue;
-                    resolveIn(headerPath, header, 1, false);
-                    const sibling = safeJoin(external_node_path_.posix.dirname(headerPath).replace(/^\.$/, ''), external_node_path_.posix.basename(headerPath).replace(/\.h$/, '.c'));
-                    if (needed.size > 0 &&
-                        sibling !== null &&
-                        sibling !== request.changedFile) {
-                        const impl = await get(sibling);
-                        if (impl !== null)
-                            resolveIn(sibling, impl, 1, true);
+                    visitedHeaders.add(headerPath);
+                    const headerRoot = resolveIn(headerPath, header, 1, false);
+                    if (headerRoot) {
+                        const headerDir = external_node_path_.posix.dirname(headerPath).replace(/^\.$/, '');
+                        for (const nested of quotedIncludes(headerRoot)) {
+                            secondHopQueue.push({ fromDir: headerDir, inc: nested });
+                        }
                     }
+                    if (refs.calls.size > 0 ||
+                        refs.writes.size > 0 ||
+                        refs.reads.size > 0) {
+                        for (const sibling of siblingSourceCandidates(headerPath)) {
+                            if (sibling === request.changedFile)
+                                continue;
+                            const impl = await get(sibling);
+                            if (impl !== null) {
+                                resolveIn(sibling, impl, 1, true);
+                                break;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+            // 2-hop transitive headers when unresolved symbols and fetch budget remain.
+            for (const hop of secondHopQueue) {
+                if (!hasRemainingWork(refs) ||
+                    signal.aborted ||
+                    out.length >= maxCandidates)
+                    break;
+                for (const base of [hop.fromDir, ...bases]) {
+                    const headerPath = safeJoin(base, hop.inc);
+                    if (headerPath === null || visitedHeaders.has(headerPath))
+                        continue;
+                    const header = await get(headerPath);
+                    if (header === null)
+                        continue;
+                    visitedHeaders.add(headerPath);
+                    resolveIn(headerPath, header, 2, false);
                     break;
                 }
             }
