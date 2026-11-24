@@ -186,3 +186,38 @@ void hal_apply(cfg_t *cfg, int v) {
   )
   assert.ok(byKey['READS:c:enum:MODE_ACTIVE@firmware/include/hal_types.h'])
 })
+
+test('trims trailing blank line at MAX_EXCERPT_LINES cap and avoids wasting fetches on macro-only headers', async () => {
+  const bodyLines = Array.from({length: 39}, (_, idx) =>
+    idx === 38 ? '' : `  x += ${idx};`
+  ).join('\n')
+  const files = {
+    'timers.c': `#include "FreeRTOS.h"\n#include "list.h"\nstatic int helper(int x) {\n${bodyLines}\n}\nvoid run(void) { helper(1); item_init(); }\n`,
+    'include/FreeRTOS.h': '#define traceRUN() ((void)0)\n',
+    'include/list.h': 'void item_init(void);\n',
+    'list.c': 'void item_init(void) {}\n'
+  }
+  const fetched = []
+  const provider = createAstContextProvider({
+    parser,
+    maxFetches: 7,
+    fetchFile: async path => {
+      fetched.push(path)
+      const text = files[path]
+      return text === undefined ? null : {blobSha: sha(text), text}
+    }
+  })
+  const res = await retrieveReviewContext(
+    provider,
+    request({
+      changedFile: 'timers.c',
+      hunks: [{startLine: 44, endLine: 44, patch: '@@ -44 +44 @@'}]
+    })
+  )
+  assert.equal(res.status, 'available')
+  const helperSnippet = res.snippets.find(s => s.symbolId === 'c:function:helper')
+  assert.ok(helperSnippet)
+  assert.equal(helperSnippet.excerpt.endsWith('\n'), false)
+  assert.ok(!fetched.some(p => p.includes('FreeRTOS.c') || p.includes('FreeRTOS.cpp')))
+  assert.ok(res.snippets.some(s => s.symbolId === 'c:function:item_init' && s.path === 'include/list.h'))
+})

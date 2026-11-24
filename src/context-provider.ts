@@ -12,9 +12,9 @@ import treeSitter from './tree-sitter.cjs'
 /** Pinned grammar identity; keep in sync with docs/AST_CONTEXT_SUPPLY_CHAIN.md. */
 export const C_CONTEXT_VARIANT_ID = 'tree-sitter-c-0.24.1'
 
-export const MAX_CONTEXT_FILE_BYTES = 256 * 1024
+export const MAX_CONTEXT_FILE_BYTES = 512 * 1024
 const MAX_EXCERPT_LINES = 40
-const DEFAULT_MAX_FETCHES = 6
+const DEFAULT_MAX_FETCHES = 10
 const C_FAMILY_FILE = /\.(?:[ch](?:pp|xx|c)?|cc)$/i
 
 export interface FetchedFile {
@@ -361,7 +361,10 @@ function headerSearchBases(changedFile: string): string[] {
   return bases
 }
 
-function siblingSourceCandidates(headerPath: string): string[] {
+function siblingSourceCandidates(
+  headerPath: string,
+  includeCpp: boolean
+): string[] {
   const dir = posix.dirname(headerPath).replace(/^\.$/, '')
   const stem = posix.basename(headerPath).replace(/\.[ch](?:pp|xx)?$/i, '')
   const out: string[] = []
@@ -371,8 +374,9 @@ function siblingSourceCandidates(headerPath: string): string[] {
     const siblingSrc = safeJoin(parent, 'src')
     if (siblingSrc) dirs.push(siblingSrc)
   }
+  const exts = includeCpp ? ['.c', '.cpp'] : ['.c']
   for (const d of dirs) {
-    for (const ext of ['.c', '.cpp']) {
+    for (const ext of exts) {
       const p = safeJoin(d, `${stem}${ext}`)
       if (p && !out.includes(p)) out.push(p)
     }
@@ -382,7 +386,9 @@ function siblingSourceCandidates(headerPath: string): string[] {
 
 function excerptOf(text: string, startLine: number, endLine: number) {
   const lines = text.split(/\r\n|\r|\n/)
-  const end = Math.min(endLine, startLine + MAX_EXCERPT_LINES - 1, lines.length)
+  let end = Math.min(endLine, startLine + MAX_EXCERPT_LINES - 1, lines.length)
+  // review-context counts trailing newline as popping the final empty line; avoid ending on blank.
+  while (end > startLine && lines[end - 1] === '') end--
   return {end, excerpt: lines.slice(startLine - 1, end).join('\n')}
 }
 
@@ -559,9 +565,10 @@ export function createAstContextProvider(
         file: FetchedFile,
         distance: number,
         wantBodyOnly: boolean
-      ): Node | null => {
+      ): {root: Node | null; matchedPartial: boolean} => {
         const t = options.parser.parse(file.text)
-        if (t === null) return null
+        if (t === null) return {root: null, matchedPartial: false}
+        let matchedPartial = false
         for (const sym of collectSymbols(t.rootNode)) {
           if (wantBodyOnly && !sym.hasBody) continue
           // Avoid echoing a definition whose entire span already sits inside a changed hunk of the same file.
@@ -588,17 +595,23 @@ export function createAstContextProvider(
               sym.hasBody ? 'definition' : 'declaration'
             }`
           )
-          if (matched.satisfied) markSatisfied(sym, refs)
+          if (matched.satisfied) {
+            markSatisfied(sym, refs)
+          } else {
+            matchedPartial = true
+          }
         }
-        return t.rootNode
+        return {root: t.rootNode, matchedPartial}
       }
 
       resolveIn(request.changedFile, self, 0, true)
 
       const bases = headerSearchBases(request.changedFile)
       const visitedHeaders = new Set<string>()
+      const headersNeedingImpl: string[] = []
       const secondHopQueue: Array<{fromDir: string; inc: string}> = []
 
+      // Pass 1: resolve direct quoted headers; move successful base dir to front to avoid repeat 404s.
       for (const inc of quotedIncludes(tree.rootNode)) {
         if (
           !hasRemainingWork(refs) ||
@@ -606,36 +619,51 @@ export function createAstContextProvider(
           out.length >= maxCandidates
         )
           break
-        for (const base of bases) {
+        for (let i = 0; i < bases.length; i++) {
+          const base = bases[i]
           const headerPath = safeJoin(base, inc)
           if (headerPath === null || visitedHeaders.has(headerPath)) continue
           const header = await get(headerPath)
           if (header === null) continue
+          if (i > 0) {
+            bases.splice(i, 1)
+            bases.unshift(base)
+          }
           visitedHeaders.add(headerPath)
 
-          const headerRoot = resolveIn(headerPath, header, 1, false)
+          const {root: headerRoot, matchedPartial} = resolveIn(
+            headerPath,
+            header,
+            1,
+            false
+          )
+          if (matchedPartial) headersNeedingImpl.push(headerPath)
           if (headerRoot) {
             const headerDir = posix.dirname(headerPath).replace(/^\.$/, '')
             for (const nested of quotedIncludes(headerRoot)) {
               secondHopQueue.push({fromDir: headerDir, inc: nested})
             }
           }
-
-          if (
-            refs.calls.size > 0 ||
-            refs.writes.size > 0 ||
-            refs.reads.size > 0
-          ) {
-            for (const sibling of siblingSourceCandidates(headerPath)) {
-              if (sibling === request.changedFile) continue
-              const impl = await get(sibling)
-              if (impl !== null) {
-                resolveIn(sibling, impl, 1, true)
-                break
-              }
-            }
-          }
           break
+        }
+      }
+
+      // Pass 2: fetch sibling .c/.cpp only for headers that declared an unresolved needed symbol.
+      const isCppFile = /\.(?:cpp|cxx|cc|hpp)$/i.test(request.changedFile)
+      for (const headerPath of headersNeedingImpl) {
+        if (
+          !hasRemainingWork(refs) ||
+          signal.aborted ||
+          out.length >= maxCandidates
+        )
+          break
+        for (const sibling of siblingSourceCandidates(headerPath, isCppFile)) {
+          if (sibling === request.changedFile) continue
+          const impl = await get(sibling)
+          if (impl !== null) {
+            resolveIn(sibling, impl, 1, true)
+            break
+          }
         }
       }
 

@@ -1560,9 +1560,9 @@ var tree_sitter_default = /*#__PURE__*/__nccwpck_require__.n(tree_sitter);
 
 /** Pinned grammar identity; keep in sync with docs/AST_CONTEXT_SUPPLY_CHAIN.md. */
 const C_CONTEXT_VARIANT_ID = 'tree-sitter-c-0.24.1';
-const MAX_CONTEXT_FILE_BYTES = 256 * 1024;
+const MAX_CONTEXT_FILE_BYTES = 512 * 1024;
 const MAX_EXCERPT_LINES = 40;
-const DEFAULT_MAX_FETCHES = 6;
+const DEFAULT_MAX_FETCHES = 10;
 const C_FAMILY_FILE = /\.(?:[ch](?:pp|xx|c)?|cc)$/i;
 /** GitHub blob reader at a pinned ref; never checks out or executes PR code. */
 function createGithubFileFetcher(octokit, owner, repo) {
@@ -1835,7 +1835,7 @@ function headerSearchBases(changedFile) {
         bases.push('include');
     return bases;
 }
-function siblingSourceCandidates(headerPath) {
+function siblingSourceCandidates(headerPath, includeCpp) {
     const dir = external_node_path_.posix.dirname(headerPath).replace(/^\.$/, '');
     const stem = external_node_path_.posix.basename(headerPath).replace(/\.[ch](?:pp|xx)?$/i, '');
     const out = [];
@@ -1846,8 +1846,9 @@ function siblingSourceCandidates(headerPath) {
         if (siblingSrc)
             dirs.push(siblingSrc);
     }
+    const exts = includeCpp ? ['.c', '.cpp'] : ['.c'];
     for (const d of dirs) {
-        for (const ext of ['.c', '.cpp']) {
+        for (const ext of exts) {
             const p = safeJoin(d, `${stem}${ext}`);
             if (p && !out.includes(p))
                 out.push(p);
@@ -1857,7 +1858,10 @@ function siblingSourceCandidates(headerPath) {
 }
 function excerptOf(text, startLine, endLine) {
     const lines = text.split(/\r\n|\r|\n/);
-    const end = Math.min(endLine, startLine + MAX_EXCERPT_LINES - 1, lines.length);
+    let end = Math.min(endLine, startLine + MAX_EXCERPT_LINES - 1, lines.length);
+    // review-context counts trailing newline as popping the final empty line; avoid ending on blank.
+    while (end > startLine && lines[end - 1] === '')
+        end--;
     return { end, excerpt: lines.slice(startLine - 1, end).join('\n') };
 }
 // Mirrors the validator in review-context.ts: one bad candidate would discard all context.
@@ -2000,7 +2004,8 @@ function createAstContextProvider(options) {
             const resolveIn = (path, file, distance, wantBodyOnly) => {
                 const t = options.parser.parse(file.text);
                 if (t === null)
-                    return null;
+                    return { root: null, matchedPartial: false };
+                let matchedPartial = false;
                 for (const sym of collectSymbols(t.rootNode)) {
                     if (wantBodyOnly && !sym.hasBody)
                         continue;
@@ -2013,49 +2018,66 @@ function createAstContextProvider(options) {
                     if (!matched)
                         continue;
                     addCandidate(path, file, sym.startLine, sym.endLine, matched.symbolId, matched.relation, sym.hasBody, distance, `${matched.relation.toLowerCase()}-${sym.hasBody ? 'definition' : 'declaration'}`);
-                    if (matched.satisfied)
+                    if (matched.satisfied) {
                         markSatisfied(sym, refs);
+                    }
+                    else {
+                        matchedPartial = true;
+                    }
                 }
-                return t.rootNode;
+                return { root: t.rootNode, matchedPartial };
             };
             resolveIn(request.changedFile, self, 0, true);
             const bases = headerSearchBases(request.changedFile);
             const visitedHeaders = new Set();
+            const headersNeedingImpl = [];
             const secondHopQueue = [];
+            // Pass 1: resolve direct quoted headers; move successful base dir to front to avoid repeat 404s.
             for (const inc of quotedIncludes(tree.rootNode)) {
                 if (!hasRemainingWork(refs) ||
                     signal.aborted ||
                     out.length >= maxCandidates)
                     break;
-                for (const base of bases) {
+                for (let i = 0; i < bases.length; i++) {
+                    const base = bases[i];
                     const headerPath = safeJoin(base, inc);
                     if (headerPath === null || visitedHeaders.has(headerPath))
                         continue;
                     const header = await get(headerPath);
                     if (header === null)
                         continue;
+                    if (i > 0) {
+                        bases.splice(i, 1);
+                        bases.unshift(base);
+                    }
                     visitedHeaders.add(headerPath);
-                    const headerRoot = resolveIn(headerPath, header, 1, false);
+                    const { root: headerRoot, matchedPartial } = resolveIn(headerPath, header, 1, false);
+                    if (matchedPartial)
+                        headersNeedingImpl.push(headerPath);
                     if (headerRoot) {
                         const headerDir = external_node_path_.posix.dirname(headerPath).replace(/^\.$/, '');
                         for (const nested of quotedIncludes(headerRoot)) {
                             secondHopQueue.push({ fromDir: headerDir, inc: nested });
                         }
                     }
-                    if (refs.calls.size > 0 ||
-                        refs.writes.size > 0 ||
-                        refs.reads.size > 0) {
-                        for (const sibling of siblingSourceCandidates(headerPath)) {
-                            if (sibling === request.changedFile)
-                                continue;
-                            const impl = await get(sibling);
-                            if (impl !== null) {
-                                resolveIn(sibling, impl, 1, true);
-                                break;
-                            }
-                        }
-                    }
                     break;
+                }
+            }
+            // Pass 2: fetch sibling .c/.cpp only for headers that declared an unresolved needed symbol.
+            const isCppFile = /\.(?:cpp|cxx|cc|hpp)$/i.test(request.changedFile);
+            for (const headerPath of headersNeedingImpl) {
+                if (!hasRemainingWork(refs) ||
+                    signal.aborted ||
+                    out.length >= maxCandidates)
+                    break;
+                for (const sibling of siblingSourceCandidates(headerPath, isCppFile)) {
+                    if (sibling === request.changedFile)
+                        continue;
+                    const impl = await get(sibling);
+                    if (impl !== null) {
+                        resolveIn(sibling, impl, 1, true);
+                        break;
+                    }
                 }
             }
             // 2-hop transitive headers when unresolved symbols and fetch budget remain.
